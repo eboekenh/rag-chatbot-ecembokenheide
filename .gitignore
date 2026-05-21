@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+chroma_db/
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+.DS_Store
