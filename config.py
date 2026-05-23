@@ -21,7 +21,7 @@ EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 # --- Chunking ---
 CHUNK_SIZE = 500
-CHUNK_OVERLAP = 50
+CHUNK_OVERLAP = 100
 
 # --- Retrieval ---
 HYBRID_THRESHOLD = 0.75

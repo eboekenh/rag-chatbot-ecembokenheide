@@ -1,3 +1,19 @@
+"""RAG chatbot orchestrator for the pandas documentation assistant.
+
+Exposes a single ``RAGChatbot`` class that ties together retrieval and
+generation:
+
+* **Stage 1 (qa_match)** – ``HybridRetriever`` finds a match in the
+  pre-built QA store whose relevance score meets ``HYBRID_THRESHOLD``
+  and returns the stored answer directly, without calling the LLM.
+* **Stage 2 (doc_search)** – The retriever falls back to the document
+  store, and the top-k chunks are forwarded to a Groq-hosted LLM to
+  synthesise an answer.
+
+Conversation history is kept in ``self.memory`` and injected into every
+LLM prompt up to ``MAX_HISTORY_TURNS`` turns.
+"""
+import logging
 import os
 import sys
 
@@ -11,9 +27,11 @@ from config import (
     RAW_DATA_DIR,
 )
 
-from langchain.schema import Document
+from langchain_core.documents import Document
 from langchain_groq import ChatGroq
 from src.retriever import HybridRetriever
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are a helpful assistant specialized in the pandas library.
 Answer based ONLY on the provided context. Be concise and precise.
@@ -22,6 +40,22 @@ Always cite the source page at the end of your answer as: Source: <url>"""
 
 
 class RAGChatbot:
+    """Retrieval-augmented generation chatbot for pandas documentation queries.
+
+    Combines a two-stage hybrid retriever with a Groq LLM and a rolling
+    conversation memory window.
+
+    Attributes
+    ----------
+    retriever : HybridRetriever
+        Handles QA-store lookup and doc-store RAG fallback.
+    llm : ChatGroq
+        Groq-hosted LLM used for answer synthesis in doc_search mode.
+    memory : list[dict]
+        Conversation history as a list of ``{role, content}`` dicts,
+        capped at ``MAX_HISTORY_TURNS * 2`` entries.
+    """
+
     def __init__(self):
         self.retriever = HybridRetriever()
         self.llm = ChatGroq(
@@ -32,6 +66,24 @@ class RAGChatbot:
         self.memory: list[dict] = []
 
     def _build_messages(self, query: str, context_docs: list[Document]) -> list[dict]:
+        """Assemble the message list for a Groq LLM call.
+
+        The list is ordered as: system prompt → recent memory turns →
+        current user message (with retrieved context prepended).
+
+        Parameters
+        ----------
+        query : str
+            The user's current question.
+        context_docs : list[Document]
+            Retrieved document chunks to include as context.
+
+        Returns
+        -------
+        list[dict]
+            A list of ``{role, content}`` dicts ready for
+            ``ChatGroq.invoke()``.
+        """
         context_blocks = []
         for i, doc in enumerate(context_docs, 1):
             source = doc.metadata.get("source", "unknown")
@@ -53,7 +105,33 @@ Question: {query}"""
         return messages
 
     def chat(self, user_message: str) -> dict:
+        """Process a user message and return an answer with metadata.
+
+        Runs the two-stage retrieval pipeline and, in doc_search mode,
+        calls the LLM to synthesise an answer from the retrieved chunks.
+        Updates ``self.memory`` with the exchange regardless of outcome.
+
+        Parameters
+        ----------
+        user_message : str
+            The raw question from the user.
+
+        Returns
+        -------
+        dict
+            A dict with keys:
+
+            * ``answer`` (str) – the generated or retrieved answer.
+            * ``sources`` (list[str]) – source URLs used; empty on error
+              or when no context was found.
+            * ``mode`` (str) – ``"qa_match"`` or ``"doc_search"``.
+            * ``confidence`` (float) – retrieval relevance score, rounded
+              to three decimal places.
+            * ``matched_question`` (str | None) – the matched QA-store
+              question in qa_match mode, else ``None``.
+        """
         retrieval = self.retriever.retrieve(user_message)
+        logger.debug("Retrieval mode: %s (confidence=%.3f)", retrieval["mode"], retrieval["confidence"])
 
         if retrieval["mode"] == "qa_match":
             answer = retrieval["answer"]
@@ -69,13 +147,18 @@ Question: {query}"""
                 sources = []
             else:
                 messages = self._build_messages(user_message, context_docs)
-                response = self.llm.invoke(messages)
-                answer = response.content
-                sources = list({
-                    doc.metadata.get("source", "")
-                    for doc in context_docs
-                    if doc.metadata.get("source")
-                })
+                try:
+                    response = self.llm.invoke(messages)
+                    answer = response.content
+                    sources = list({
+                        doc.metadata.get("source", "")
+                        for doc in context_docs
+                        if doc.metadata.get("source")
+                    })
+                except Exception as exc:
+                    logger.error("LLM call failed: %s", exc)
+                    answer = "I'm sorry, I couldn't reach the language model. Please try again."
+                    sources = []
 
             mode = "doc_search"
             confidence = retrieval["confidence"]
@@ -96,9 +179,28 @@ Question: {query}"""
         }
 
     def reset_memory(self) -> None:
+        """Clear the conversation memory."""
         self.memory = []
 
     def get_stats(self) -> dict:
+        """Return best-effort runtime statistics about the chatbot's data.
+
+        All three stat lookups are wrapped in silent try/except blocks;
+        a failure in any one does not affect the others.
+
+        Returns
+        -------
+        dict
+            A dict with keys:
+
+            * ``qa_pairs`` (int) – number of rows in the QA CSV dataset.
+            * ``doc_chunks`` (int) – number of chunks in the doc vector
+              store (via the internal ChromaDB collection API).
+            * ``pages_scraped`` (int) – number of ``.txt`` files in the
+              raw data directory.
+            * ``memory_turns`` (int) – current number of conversation
+              turns held in memory.
+        """
         qa_count = 0
         doc_count = 0
         page_count = 0
@@ -117,6 +219,9 @@ Question: {query}"""
             pass
 
         try:
+            # _collection is an internal attribute of LangChain's Chroma wrapper.
+            # No public API exists for a direct count; the try/except handles
+            # any breakage from future LangChain/ChromaDB version changes.
             doc_count = self.retriever.doc_store._collection.count()
         except Exception:
             pass

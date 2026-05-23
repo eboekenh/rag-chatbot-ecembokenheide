@@ -1,9 +1,33 @@
+"""
+vector_store.py
+---------------
+Builds and loads the two ChromaDB vector stores used by this RAG chatbot:
+
+  doc_store  – chunked raw documentation pages (used for Stage 2 RAG fallback).
+  qa_store   – pre-generated Q/A pairs, questions embedded as vectors,
+               answers stored as metadata (used for Stage 1 lookup).
+
+Both stores use the same embedding model (all-MiniLM-L6-v2) with
+``normalize_embeddings=True``, and ChromaDB's default L2 distance metric.
+A single cached embedder instance (``get_embedder()``) is shared across all
+store operations to avoid reloading the model on every call.
+
+Typical usage
+-------------
+First-time setup (run once, or after data changes):
+    python -m src.vector_store
+
+Runtime (called by retriever.py on startup):
+    doc_store = load_doc_store()
+    qa_store  = load_qa_store()
+"""
+
+import logging
 import os
 import sys
 import functools
 
 import pandas as pd
-from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
@@ -17,15 +41,28 @@ from config import (
     CHUNK_OVERLAP,
 )
 
-from langchain.schema import Document
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
+
+logger = logging.getLogger(__name__)
 
 
 @functools.lru_cache(maxsize=1)
 def get_embedder() -> HuggingFaceEmbeddings:
-    print(f"Loading embedding model: {EMBEDDING_MODEL}")
+    """
+    Load and cache the sentence-transformer embedding model.
+
+    Uses ``functools.lru_cache`` so the model is loaded from disk only once
+    per process, regardless of how many times this function is called.
+    L2-normalised output vectors (``normalize_embeddings=True``) bound the
+    maximum L2 distance between any two vectors to ``sqrt(2)``.  This is
+    required for LangChain's relevance score formula
+    ``1 - L2_distance / sqrt(2)`` to stay in ``[0, 1]``; without
+    normalisation the distance can exceed ``sqrt(2)`` and scores turn negative.
+    """
+    logger.info(f"Loading embedding model: {EMBEDDING_MODEL}")
     return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
         model_kwargs={"device": "cpu"},
@@ -34,6 +71,22 @@ def get_embedder() -> HuggingFaceEmbeddings:
 
 
 def load_raw_pages(raw_dir: str) -> list[dict]:
+    """
+    Read all ``.txt`` files from *raw_dir* and parse them into page dicts.
+
+    Each file is expected to follow the format written by ``scraper.py``::
+
+        URL: <url>
+        TITLE: <title>
+        ----------
+        <content ...>
+
+    Returns
+    -------
+    list[dict]
+        Each dict has keys ``url``, ``title``, and ``content``.
+        Files with no content after the separator are silently skipped.
+    """
     pages = []
     for filename in sorted(os.listdir(raw_dir)):
         if not filename.endswith(".txt"):
@@ -62,6 +115,23 @@ def load_raw_pages(raw_dir: str) -> list[dict]:
 
 
 def chunk_documents(pages: list[dict]) -> list[Document]:
+    """
+    Split page content into overlapping chunks and wrap them as LangChain Documents.
+
+    Uses ``RecursiveCharacterTextSplitter`` with the CHUNK_SIZE and CHUNK_OVERLAP
+    values from config.  Each chunk inherits the source URL and page title from
+    its parent page as metadata, which is later cited in chatbot responses.
+
+    Parameters
+    ----------
+    pages : list[dict]
+        Output of ``load_raw_pages()``.
+
+    Returns
+    -------
+    list[Document]
+        Flat list of all chunks across all pages.
+    """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
@@ -78,7 +148,32 @@ def chunk_documents(pages: list[dict]) -> list[Document]:
     return docs
 
 
-def build_doc_store(raw_dir: str = None, persist_dir: str = None) -> Chroma:
+def build_doc_store(raw_dir: str | None = None, persist_dir: str | None = None) -> Chroma:
+    """
+    Build the documentation vector store from raw scraped ``.txt`` files.
+
+    Reads all pages from *raw_dir*, chunks them, embeds each chunk, and
+    persists the resulting ChromaDB collection to *persist_dir*.
+    Overwrites any existing store at that path without warning.
+
+    Parameters
+    ----------
+    raw_dir : str, optional
+        Directory containing the raw ``.txt`` files.  Defaults to RAW_DATA_DIR.
+    persist_dir : str, optional
+        Directory to persist the ChromaDB collection.  Defaults to
+        ``<CHROMA_PERSIST_DIR>/docs``.
+
+    Returns
+    -------
+    Chroma
+        The built and persisted vector store.
+
+    Raises
+    ------
+    FileNotFoundError
+        If *raw_dir* contains no ``.txt`` files.
+    """
     if raw_dir is None:
         raw_dir = RAW_DATA_DIR
     if persist_dir is None:
@@ -88,25 +183,52 @@ def build_doc_store(raw_dir: str = None, persist_dir: str = None) -> Chroma:
     if not pages:
         raise FileNotFoundError(f"No .txt files in {raw_dir}. Run scraper.py first.")
 
-    print(f"Chunking {len(pages)} pages...")
+    logger.info(f"Chunking {len(pages)} pages...")
     docs = chunk_documents(pages)
-    print(f"Created {len(docs)} chunks")
+    logger.info(f"Created {len(docs)} chunks")
 
     embedder = get_embedder()
 
-    print(f"Building doc store → {persist_dir}")
+    logger.info(f"Building doc store → {persist_dir}")
     store = Chroma.from_documents(
         documents=docs,
         embedding=embedder,
         collection_name=DOC_COLLECTION_NAME,
         persist_directory=persist_dir,
     )
-    store.persist()
-    print(f"Doc store ready: {len(docs)} chunks indexed")
+    logger.info(f"Doc store ready: {len(docs)} chunks indexed")
     return store
 
 
-def build_qa_store(qa_csv: str = None, persist_dir: str = None) -> Chroma:
+def build_qa_store(qa_csv: str | None = None, persist_dir: str | None = None) -> Chroma:
+    """
+    Build the Q/A vector store from the pre-generated Q/A dataset CSV.
+
+    Only the *question* text is embedded — the answer and source URL are
+    stored as document metadata so they can be returned without an LLM call
+    when the Stage 1 relevance threshold is met (see HYBRID_THRESHOLD in config).
+
+    Parameters
+    ----------
+    qa_csv : str, optional
+        Path to the Q/A dataset CSV.  Must have columns ``question``,
+        ``answer``, and ``source_page``.  Defaults to QA_DATASET_PATH.
+    persist_dir : str, optional
+        Directory to persist the ChromaDB collection.  Defaults to
+        ``<CHROMA_PERSIST_DIR>/qa``.
+
+    Returns
+    -------
+    Chroma
+        The built and persisted vector store.
+
+    Raises
+    ------
+    FileNotFoundError
+        If *qa_csv* does not exist.
+    ValueError
+        If *qa_csv* is missing required columns.
+    """
     if qa_csv is None:
         qa_csv = QA_DATASET_PATH
     if persist_dir is None:
@@ -133,21 +255,43 @@ def build_qa_store(qa_csv: str = None, persist_dir: str = None) -> Chroma:
 
     embedder = get_embedder()
 
-    print(f"Building Q&A store → {persist_dir} ({len(docs)} pairs)")
+    logger.info(f"Building Q&A store → {persist_dir} ({len(docs)} pairs)")
     store = Chroma.from_documents(
         documents=docs,
         embedding=embedder,
         collection_name=QA_COLLECTION_NAME,
         persist_directory=persist_dir,
     )
-    store.persist()
-    print(f"Q&A store ready: {len(docs)} pairs indexed")
+    logger.info(f"Q&A store ready: {len(docs)} pairs indexed")
     return store
 
 
-def load_doc_store(persist_dir: str = None) -> Chroma:
+def load_doc_store(persist_dir: str | None = None) -> Chroma:
+    """
+    Load an existing documentation vector store from disk.
+
+    Parameters
+    ----------
+    persist_dir : str, optional
+        Path to the persisted ChromaDB collection.  Defaults to
+        ``<CHROMA_PERSIST_DIR>/docs``.
+
+    Returns
+    -------
+    Chroma
+        The loaded vector store, ready for similarity search.
+
+    Raises
+    ------
+    FileNotFoundError
+        If *persist_dir* does not exist (store has not been built yet).
+    """
     if persist_dir is None:
         persist_dir = os.path.join(CHROMA_PERSIST_DIR, "docs")
+    if not os.path.exists(persist_dir):
+        raise FileNotFoundError(
+            f"Doc store not found at '{persist_dir}'. Run build_doc_store() first."
+        )
     return Chroma(
         collection_name=DOC_COLLECTION_NAME,
         embedding_function=get_embedder(),
@@ -155,9 +299,32 @@ def load_doc_store(persist_dir: str = None) -> Chroma:
     )
 
 
-def load_qa_store(persist_dir: str = None) -> Chroma:
+def load_qa_store(persist_dir: str | None = None) -> Chroma:
+    """
+    Load an existing Q/A vector store from disk.
+
+    Parameters
+    ----------
+    persist_dir : str, optional
+        Path to the persisted ChromaDB collection.  Defaults to
+        ``<CHROMA_PERSIST_DIR>/qa``.
+
+    Returns
+    -------
+    Chroma
+        The loaded vector store, ready for similarity search.
+
+    Raises
+    ------
+    FileNotFoundError
+        If *persist_dir* does not exist (store has not been built yet).
+    """
     if persist_dir is None:
         persist_dir = os.path.join(CHROMA_PERSIST_DIR, "qa")
+    if not os.path.exists(persist_dir):
+        raise FileNotFoundError(
+            f"Q/A store not found at '{persist_dir}'. Run build_qa_store() first."
+        )
     return Chroma(
         collection_name=QA_COLLECTION_NAME,
         embedding_function=get_embedder(),
@@ -166,6 +333,7 @@ def load_qa_store(persist_dir: str = None) -> Chroma:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     build_doc_store()
     build_qa_store()
     print("\nBoth vector stores built successfully.")
