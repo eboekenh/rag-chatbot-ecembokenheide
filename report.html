@@ -1,0 +1,1025 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG QA Chatbot – Project Report</title>
+<style>
+  /* ── Global ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Segoe UI", Arial, sans-serif;
+    font-size: 11pt;
+    line-height: 1.65;
+    color: #1a1a1a;
+    background: #fff;
+  }
+
+  /* ── Page layout (print-ready) ── */
+  .page {
+    max-width: 210mm;
+    margin: 0 auto;
+    padding: 20mm 22mm;
+  }
+  @page { size: A4; margin: 20mm 22mm; }
+  @media print {
+    .page { padding: 0; }
+    .page-break { page-break-before: always; }
+    a { color: inherit; text-decoration: none; }
+    .no-print { display: none; }
+  }
+
+  /* ── Cover page ── */
+  .cover {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 85vh;
+    text-align: center;
+    border-bottom: 3px solid #150458;
+    padding-bottom: 30px;
+  }
+  .cover .logo { font-size: 64px; margin-bottom: 12px; }
+  .cover h1 {
+    font-size: 26pt;
+    color: #150458;
+    margin-bottom: 8px;
+    line-height: 1.2;
+  }
+  .cover .subtitle {
+    font-size: 13pt;
+    color: #444;
+    margin-bottom: 30px;
+  }
+  .cover-table {
+    border-collapse: collapse;
+    width: 70%;
+    margin-top: 20px;
+    font-size: 10.5pt;
+  }
+  .cover-table td {
+    padding: 6px 14px;
+    border: 1px solid #ddd;
+  }
+  .cover-table td:first-child {
+    background: #f4f4f4;
+    font-weight: 600;
+    width: 38%;
+  }
+
+  /* ── Section headings ── */
+  h1.section {
+    font-size: 18pt;
+    color: #150458;
+    border-bottom: 2px solid #150458;
+    padding-bottom: 6px;
+    margin: 28px 0 14px;
+  }
+  h2 { font-size: 13pt; color: #1a3a70; margin: 20px 0 8px; }
+  h3 { font-size: 11pt; color: #2c5282; margin: 16px 0 6px; }
+
+  /* ── Body text ── */
+  p { margin-bottom: 10px; }
+  ul, ol { margin: 8px 0 10px 22px; }
+  li { margin-bottom: 4px; }
+
+  /* ── Tables ── */
+  table.data {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 9.5pt;
+    margin: 12px 0 16px;
+  }
+  table.data th {
+    background: #150458;
+    color: #fff;
+    padding: 7px 10px;
+    text-align: left;
+  }
+  table.data td {
+    padding: 6px 10px;
+    border-bottom: 1px solid #e0e0e0;
+    vertical-align: top;
+  }
+  table.data tr:nth-child(even) td { background: #f8f8fc; }
+
+  /* ── Code blocks ── */
+  pre {
+    background: #1e1e2e;
+    color: #cdd6f4;
+    padding: 12px 14px;
+    border-radius: 6px;
+    font-size: 8.5pt;
+    overflow-x: auto;
+    margin: 10px 0 14px;
+    line-height: 1.5;
+  }
+  code {
+    font-family: "Consolas", "Courier New", monospace;
+    background: #eef0f7;
+    color: #2c3e6e;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 8.5pt;
+  }
+  pre code { background: none; color: inherit; padding: 0; }
+
+  /* ── Info boxes ── */
+  .box {
+    border-left: 4px solid #150458;
+    background: #f4f6fb;
+    padding: 10px 14px;
+    margin: 12px 0;
+    border-radius: 0 6px 6px 0;
+    font-size: 10pt;
+  }
+  .box.green { border-color: #276749; background: #f0fff4; }
+  .box.orange { border-color: #c05621; background: #fffaf0; }
+  .box.red { border-color: #9b2335; background: #fff5f5; }
+
+  /* ── Architecture diagram ── */
+  .arch {
+    border: 1.5px solid #c5cae9;
+    border-radius: 10px;
+    padding: 20px;
+    margin: 16px 0;
+    background: #f9f9ff;
+    font-family: "Consolas", monospace;
+    font-size: 8.5pt;
+    line-height: 1.8;
+    white-space: pre;
+  }
+
+  /* ── Screenshot placeholder ── */
+  .screenshot {
+    border: 2px dashed #9099b8;
+    border-radius: 8px;
+    background: #f4f6fb;
+    padding: 40px 20px;
+    text-align: center;
+    color: #6b7bb8;
+    font-style: italic;
+    margin: 14px 0;
+    min-height: 120px;
+  }
+
+  /* ── Metric cards ── */
+  .metrics {
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+    margin: 14px 0;
+  }
+  .metric-card {
+    flex: 1;
+    min-width: 120px;
+    background: #150458;
+    color: #fff;
+    padding: 12px 16px;
+    border-radius: 8px;
+    text-align: center;
+  }
+  .metric-card .num { font-size: 22pt; font-weight: 700; }
+  .metric-card .lbl { font-size: 8.5pt; opacity: 0.85; }
+
+  /* ── TOC ── */
+  .toc { margin: 20px 0; }
+  .toc a {
+    display: flex;
+    justify-content: space-between;
+    color: #1a3a70;
+    text-decoration: none;
+    padding: 3px 0;
+    border-bottom: 1px dotted #ccc;
+    font-size: 10.5pt;
+  }
+  .toc a:hover { color: #150458; }
+  .toc .num { color: #888; font-size: 9.5pt; }
+  .toc .section-label { color: #150458; font-weight: 600; }
+
+  /* ── Tags ── */
+  .tag {
+    display: inline-block;
+    background: #e8eaf6;
+    color: #2c3e6e;
+    border-radius: 3px;
+    padding: 1px 7px;
+    font-size: 8.5pt;
+    margin: 2px 2px;
+  }
+  .tag.tech { background: #150458; color: #fff; }
+
+  /* ── Footer ── */
+  .footer {
+    margin-top: 40px;
+    padding-top: 12px;
+    border-top: 1px solid #ddd;
+    font-size: 8.5pt;
+    color: #888;
+    text-align: center;
+  }
+
+  /* ── Print button ── */
+  .print-btn {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: #150458;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 10pt;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    z-index: 999;
+  }
+  .print-btn:hover { background: #1a3a70; }
+</style>
+</head>
+<body>
+
+<button class="print-btn no-print" onclick="window.print()">🖨 Save as PDF</button>
+
+<div class="page">
+
+<!-- ══════════════════════════════════════════════════════════════
+     COVER PAGE
+═══════════════════════════════════════════════════════════════ -->
+<div class="cover">
+  <div class="logo">🐼</div>
+  <h1>RAG QA Chatbot for<br>Pandas Documentation</h1>
+  <div class="subtitle">Retrieval-Augmented Generation · AGAI-03 Assignment 1<br>Agentic AI Bootcamp</div>
+
+  <table class="cover-table">
+    <tr><td>Course</td><td>Agentic AI Bootcamp – AGAI-03</td></tr>
+    <tr><td>Assignment</td><td>Assignment 1 – RAG QA Chatbot</td></tr>
+    <tr><td>Target Website</td><td>pandas.pydata.org/docs/user_guide</td></tr>
+    <tr><td>LLM (QA Gen)</td><td>Ollama · llama3.2:3b (local)</td></tr>
+    <tr><td>LLM (Chatbot)</td><td>Groq API · llama-3.1-8b-instant</td></tr>
+    <tr><td>Framework</td><td>LangChain · ChromaDB · Streamlit</td></tr>
+    <tr><td>Date</td><td>May 2026</td></tr>
+  </table>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     TABLE OF CONTENTS
+═══════════════════════════════════════════════════════════════ -->
+<h1 class="section">Table of Contents</h1>
+<div class="toc">
+  <a href="#s1"><span>1. Introduction &amp; Website Choice</span><span class="num">2</span></a>
+  <a href="#s2"><span>2. Scraping Methodology &amp; Challenges</span><span class="num">3</span></a>
+  <a href="#s3"><span>3. Q&amp;A Generation Prompt Strategy</span><span class="num">4</span></a>
+  <a href="#s4"><span>4. System Architecture</span><span class="num">5</span></a>
+  <a href="#s5"><span>5. Hybrid Retrieval Explanation</span><span class="num">6</span></a>
+  <a href="#s6"><span>6. Chatbot Interface &amp; Screenshots</span><span class="num">7</span></a>
+  <a href="#s7"><span>7. Limitations &amp; Future Improvements</span><span class="num">8</span></a>
+  <a href="#s8"><span>8. Learnings</span><span class="num">9</span></a>
+  <a href="#s9"><span>Appendix – Sample Data</span><span class="num">10</span></a>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     1. INTRODUCTION & WEBSITE CHOICE
+═══════════════════════════════════════════════════════════════ -->
+<div class="page-break"></div>
+<h1 class="section" id="s1">1. Introduction &amp; Website Choice</h1>
+
+<h2>1.1 Project Overview</h2>
+<p>
+  This project implements a <strong>Retrieval-Augmented Generation (RAG) chatbot</strong> that answers
+  questions about the <em>pandas</em> Python library by retrieving relevant documentation passages and
+  generating accurate, grounded responses via a large language model. The system combines two retrieval
+  strategies (direct Q&amp;A matching and semantic document search) with a conversational LLM to deliver
+  precise answers with source citations.
+</p>
+
+<h2>1.2 Chosen Website</h2>
+<div class="box">
+  <strong>Target:</strong> <code>https://pandas.pydata.org/docs/user_guide/</code><br>
+  <strong>Pages scraped:</strong> 23 pages across the full User Guide section<br>
+  <strong>Content type:</strong> Official Python library documentation (HTML, Sphinx-based)
+</div>
+
+<p>The following User Guide sections were scraped:</p>
+<table class="data">
+  <tr><th>#</th><th>Section</th><th>Slug / Filename</th></tr>
+  <tr><td>1</td><td>10 Minutes to pandas</td><td>10min.html</td></tr>
+  <tr><td>2</td><td>Intro to Data Structures</td><td>dsintro.html</td></tr>
+  <tr><td>3</td><td>Essential Basic Functionality</td><td>basics.html</td></tr>
+  <tr><td>4</td><td>IO Tools (read_csv, to_excel …)</td><td>io.html</td></tr>
+  <tr><td>5</td><td>Indexing &amp; Selecting Data</td><td>indexing.html</td></tr>
+  <tr><td>6</td><td>MultiIndex / Advanced Indexing</td><td>advanced.html</td></tr>
+  <tr><td>7</td><td>Copy-on-Write</td><td>copy_on_write.html</td></tr>
+  <tr><td>8</td><td>Merge, Join, Concatenate</td><td>merging.html</td></tr>
+  <tr><td>9</td><td>Reshaping &amp; Pivot Tables</td><td>reshaping.html</td></tr>
+  <tr><td>10</td><td>Working with Text Data</td><td>text.html</td></tr>
+  <tr><td>11</td><td>Working with Missing Data</td><td>missing_data.html</td></tr>
+  <tr><td>12</td><td>Duplicate Labels</td><td>duplicates.html</td></tr>
+  <tr><td>13</td><td>Categorical Data</td><td>categorical.html</td></tr>
+  <tr><td>14</td><td>Nullable Integer Data Type</td><td>integer_na.html</td></tr>
+  <tr><td>15</td><td>Nullable Boolean Data Type</td><td>boolean.html</td></tr>
+  <tr><td>16</td><td>Chart Visualisation</td><td>visualization.html</td></tr>
+  <tr><td>17</td><td>Computational Tools</td><td>computation.html</td></tr>
+  <tr><td>18</td><td>Group By: Split-Apply-Combine</td><td>groupby.html</td></tr>
+  <tr><td>19</td><td>Windowing Operations</td><td>window.html</td></tr>
+  <tr><td>20</td><td>Time Series / Date Functionality</td><td>timeseries.html</td></tr>
+  <tr><td>21</td><td>Time Deltas</td><td>timedeltas.html</td></tr>
+  <tr><td>22</td><td>Options &amp; Settings</td><td>options.html</td></tr>
+  <tr><td>23</td><td>Enhancing Performance</td><td>enhancingperf.html</td></tr>
+</table>
+
+<h2>1.3 Justification for Choosing pandas Documentation</h2>
+<p>The pandas User Guide was selected for the following reasons:</p>
+<ul>
+  <li><strong>High query frequency:</strong> pandas is among the top 5 most-used Python packages. Developers constantly look up API usage, which makes a domain-specific QA chatbot immediately useful.</li>
+  <li><strong>Structured content:</strong> Sphinx-generated HTML has a consistent layout (headings, code blocks, parameter tables), which simplifies extraction of clean, coherent text chunks.</li>
+  <li><strong>Rich knowledge density:</strong> Each page contains numerous functions, parameters, and code examples – ideal for generating diverse, specific Q&amp;A pairs.</li>
+  <li><strong>Publicly accessible &amp; legally scrape-able:</strong> The pandas documentation is published under the BSD 3-Clause license and permits educational use and reproduction.</li>
+  <li><strong>Factual grounding requirement:</strong> Library documentation demands precise, factual answers (e.g., parameter names, return types), making it a good test of RAG over hallucination-prone free-form LLM generation.</li>
+</ul>
+
+<!-- ══════════════════════════════════════════════════════════════
+     2. SCRAPING METHODOLOGY & CHALLENGES
+═══════════════════════════════════════════════════════════════ -->
+<div class="page-break"></div>
+<h1 class="section" id="s2">2. Scraping Methodology &amp; Challenges</h1>
+
+<h2>2.1 Tools &amp; Libraries</h2>
+<div class="metrics">
+  <div class="metric-card"><div class="num">23</div><div class="lbl">Pages Scraped</div></div>
+  <div class="metric-card"><div class="num">2s</div><div class="lbl">Delay Between Requests</div></div>
+  <div class="metric-card"><div class="num">lxml</div><div class="lbl">HTML Parser</div></div>
+  <div class="metric-card"><div class="num">BS4</div><div class="lbl">BeautifulSoup 4</div></div>
+</div>
+
+<p>The scraper (<code>src/scraper.py</code>) uses <strong>requests</strong> for HTTP fetching and
+<strong>BeautifulSoup 4</strong> with the <strong>lxml</strong> parser for HTML parsing. The pipeline is:</p>
+<ol>
+  <li>Iterate over a predefined list of 23 target URLs from <code>config.py</code>.</li>
+  <li>Fetch each page with a polite <code>User-Agent</code> header identifying the bot.</li>
+  <li>Parse the page and remove non-content elements (navigation, footer, sidebar, search box).</li>
+  <li>Extract the main article content using PyData Sphinx Theme selectors.</li>
+  <li>Clean and normalise whitespace, then save as a plain <code>.txt</code> file with a metadata header.</li>
+  <li>Wait <code>SCRAPE_DELAY = 2</code> seconds between requests to respect the server.</li>
+</ol>
+
+<h2>2.2 HTML Cleaning Strategy</h2>
+<p>
+  The pandas documentation uses the <strong>PyData Sphinx Theme</strong>. Content is inside
+  <code>div.bd-content</code> or <code>article.bd-article</code>. The scraper removes:
+</p>
+<ul>
+  <li><code>nav</code>, <code>footer</code>, <code>script</code>, <code>style</code> – structural chrome</li>
+  <li><code>.headerlink</code> – permalink anchors (¶ symbols)</li>
+  <li><code>.toctree-wrapper</code>, <code>#searchbox</code>, <code>.sphinxsidebar</code> – navigation panels</li>
+  <li><code>.bd-sidebar</code>, <code>.bd-toc</code>, <code>.prev-next-area</code> – theme UI elements</li>
+</ul>
+<p>After tag removal, <code>get_text(separator="\n", strip=True)</code> extracts clean prose,
+and excessive blank lines are collapsed to at most one blank line.</p>
+
+<p>Each saved file has a small metadata header:</p>
+<pre><code>URL: https://pandas.pydata.org/docs/user_guide/groupby.html
+TITLE: Group By: split-apply-combine
+SCRAPED: 2026-05-21T10:34:12
+--------------------------------------------------
+(content follows)
+</code></pre>
+
+<h2>2.3 Challenges Faced</h2>
+<table class="data">
+  <tr><th>Challenge</th><th>Description</th><th>Resolution</th></tr>
+  <tr>
+    <td>PyData Sphinx Theme selectors</td>
+    <td>The modern PyData theme nests content differently from classic Sphinx. A single CSS selector did not cover all pages.</td>
+    <td>Implemented a cascading selector chain (<code>bd-content → bd-article → main → body</code>) with fallback.</td>
+  </tr>
+  <tr>
+    <td>Navigation/sidebar noise</td>
+    <td>Without removing sidebar elements, extracted text contained irrelevant menu items, increasing Q&amp;A noise.</td>
+    <td>Explicit <code>tag.decompose()</code> calls for all non-content elements before text extraction.</td>
+  </tr>
+  <tr>
+    <td>Header link artefacts</td>
+    <td>Sphinx inserts <code>¶</code> permalink symbols after every heading via <code>.headerlink</code> tags.</td>
+    <td>Removed via CSS selector before text extraction.</td>
+  </tr>
+  <tr>
+    <td>Rate limiting / politeness</td>
+    <td>Scraping 23 pages too quickly risks IP blocks and puts unnecessary load on the server.</td>
+    <td>Added 2-second delay between requests and a descriptive User-Agent string.</td>
+  </tr>
+  <tr>
+    <td>Large pages (e.g., io.html)</td>
+    <td>Some pages are very long (~60,000 characters), producing too many chunks for fast Q&amp;A generation.</td>
+    <td>Chunking at Q&amp;A generation time (max 1,500 chars per chunk) rather than at scrape time.</td>
+  </tr>
+</table>
+
+<!-- ══════════════════════════════════════════════════════════════
+     3. Q&A GENERATION PROMPT STRATEGY
+═══════════════════════════════════════════════════════════════ -->
+<div class="page-break"></div>
+<h1 class="section" id="s3">3. Q&amp;A Generation Prompt Strategy</h1>
+
+<h2>3.1 Overview</h2>
+<p>
+  The Q&amp;A generator (<code>src/qa_generator.py</code>) converts raw scraped text into structured
+  question-answer pairs using a locally running LLM. It operates in a fully offline, rate-limit-free
+  manner using <strong>Ollama</strong> with the <code>llama3.2:3b</code> model.
+</p>
+
+<h2>3.2 Model Choice</h2>
+<div class="box orange">
+  <strong>Model:</strong> <code>llama3.2:3b</code> via Ollama (local inference)<br>
+  <strong>Reason:</strong> The larger <code>llama3.1:8b</code> requires 4.8 GB RAM but only 4.5 GB was
+  available on the development machine. The 3B model (2 GB) fits comfortably and still produces
+  coherent JSON-structured Q&amp;A pairs. It runs entirely offline – no API keys, no rate limits,
+  no cost per token.
+</div>
+
+<h2>3.3 Prompt Design</h2>
+<p>The prompt instructs the model to act as a dataset generator and enforces strict JSON output:</p>
+<pre><code>You are a Q&amp;A dataset generator for a RAG chatbot about the pandas library.
+
+Given the text below, generate exactly {n} question-answer pairs that test
+real comprehension.
+- Questions must be specific and answerable from the text only
+- Answers must be concise but complete (2-4 sentences)
+- Cover different aspects of the text (don't repeat similar questions)
+
+Return ONLY a valid JSON object with a "pairs" key containing an array.
+No explanations, no markdown, no preamble.
+
+Format:
+{"pairs": [
+  {"question": "...", "answer": "..."},
+  ...
+]}
+
+TEXT:
+{chunk}
+</code></pre>
+
+<h2>3.4 Chunking Strategy</h2>
+<p>
+  Before passing content to the LLM, each page is split into <strong>chunks of max 1,500 characters</strong>.
+  The chunking algorithm:
+</p>
+<ol>
+  <li>Splits on double newlines (paragraph boundaries) first.</li>
+  <li>If a single paragraph exceeds 1,500 chars, splits further by sentence (<code>(?&lt;=[.!?])\s+</code> regex).</li>
+  <li>Filters out chunks shorter than 100 characters (too short to generate meaningful pairs).</li>
+</ol>
+<p>
+  Each chunk produces <strong>5 Q&amp;A pairs</strong>. This balances diversity (multiple pairs per topic)
+  with speed (smaller context = faster inference on CPU).
+</p>
+
+<h2>3.5 JSON Robustness</h2>
+<p>
+  Small models occasionally produce slightly malformed JSON (e.g., trailing commas, truncated strings).
+  The parser handles this with:
+</p>
+<ul>
+  <li><strong>Markdown fence stripping:</strong> Removes <code>```json</code> / <code>```</code> wrappers if the model adds them.</li>
+  <li><strong>Retry logic (max 2 retries):</strong> On JSON parse failure, the same chunk is retried up to 2 more times.</li>
+  <li><strong>Graceful skip:</strong> After 3 failed attempts, the chunk is skipped with a log message; processing continues.</li>
+  <li><strong>Field validation:</strong> Only pairs with both <code>"question"</code> and <code>"answer"</code> keys are kept.</li>
+</ul>
+
+<h2>3.6 Deduplication</h2>
+<p>
+  After all pages are processed, a deduplication pass removes pairs with identical (case-insensitive)
+  questions. This eliminates near-duplicate pairs that arise when similar content appears in multiple
+  sections of the documentation.
+</p>
+
+<h2>3.7 Pipeline Summary</h2>
+<table class="data">
+  <tr><th>Step</th><th>Action</th><th>Config</th></tr>
+  <tr><td>1</td><td>Load 23 <code>.txt</code> files from <code>data/raw/</code></td><td>–</td></tr>
+  <tr><td>2</td><td>Split each page into chunks</td><td>max_chars = 1,500</td></tr>
+  <tr><td>3</td><td>POST each chunk to Ollama /api/chat</td><td>model = llama3.2:3b, temperature = 0.4</td></tr>
+  <tr><td>4</td><td>Parse JSON response, validate fields</td><td>max_retries = 2</td></tr>
+  <tr><td>5</td><td>Collect all valid pairs</td><td>n_pairs = 5 per chunk</td></tr>
+  <tr><td>6</td><td>Deduplicate by question text</td><td>case-insensitive</td></tr>
+  <tr><td>7</td><td>Save to <code>data/qa_dataset.csv</code></td><td>columns: question, answer, source_page</td></tr>
+</table>
+
+<!-- ══════════════════════════════════════════════════════════════
+     4. ARCHITECTURE DIAGRAM
+═══════════════════════════════════════════════════════════════ -->
+<div class="page-break"></div>
+<h1 class="section" id="s4">4. System Architecture</h1>
+
+<h2>4.1 Full Pipeline Diagram</h2>
+<div class="arch">
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        RAG QA CHATBOT – SYSTEM ARCHITECTURE                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+ ╔══════════════════╗         ╔════════════════════╗
+ ║  OFFLINE PHASE   ║         ║   ONLINE PHASE     ║
+ ╚══════════════════╝         ╚════════════════════╝
+
+  ┌───────────────┐            ┌─────────────────────────────────────────┐
+  │ pandas docs   │            │           Streamlit UI  (app.py)        │
+  │ User Guide    │            │  User types question                    │
+  │ (23 pages)    │            └────────────────┬────────────────────────┘
+  └──────┬────────┘                             │
+         │ HTTP GET                             │ query
+         ▼                                      ▼
+  ┌───────────────┐            ┌─────────────────────────────────────────┐
+  │ scraper.py    │            │         RAGChatbot  (chatbot.py)        │
+  │ BeautifulSoup │            │  - Maintains conversation memory        │
+  │ + lxml        │            │  - Builds LLM messages with context     │
+  └──────┬────────┘            └────────────────┬────────────────────────┘
+         │ .txt files                           │ retrieve(query)
+         │ data/raw/                            ▼
+         │            ┌─────────────────────────────────────────────────┐
+         │            │        HybridRetriever  (retriever.py)          │
+         │            │                                                  │
+         │            │  ┌──────────────────┐  ┌──────────────────────┐ │
+         │            │  │  QA Store Search │  │  Doc Store Search    │ │
+         │            │  │  (qa_collection) │  │  (pandas_docs coll.) │ │
+         │            │  │  similarity ≥    │  │  top-k = 5           │ │
+         │            │  │  0.75 threshold  │  │  semantic search     │ │
+         │            │  └────────┬─────────┘  └──────────┬───────────┘ │
+         │            │           │                        │              │
+         │            │     ┌─────▼─────┐        ┌────────▼──────┐      │
+         │            │     │ EXACT Q&A │        │ DOC CONTEXT   │      │
+         │            │     │  MATCH    │        │  RETRIEVED    │      │
+         │            │     └─────┬─────┘        └────────┬──────┘      │
+         │            └───────────┼─────────────────────  │  ───────────┘
+         │                        │                        │
+         │                  Direct answer          Context → LLM
+         │                  returned                       │
+         │                                                 ▼
+         │                              ┌──────────────────────────────┐
+         │                              │  Groq API  (llama-3.1-8b)   │
+         │                              │  Generates grounded answer   │
+         │                              └──────────────────────────────┘
+         │
+         ▼
+  ┌───────────────┐
+  │qa_generator.py│
+  │ Ollama local  │
+  │ llama3.2:3b   │
+  └──────┬────────┘
+         │ data/qa_dataset.csv
+         ▼
+  ┌───────────────┐
+  │vector_store.py│
+  │ ChromaDB      │
+  │ ┌───────────┐ │
+  │ │ QA coll.  │ │◄── Q&A pairs (question as embedding key)
+  │ └───────────┘ │
+  │ ┌───────────┐ │
+  │ │ Doc coll. │ │◄── Chunked raw docs (500 char / 50 overlap)
+  │ └───────────┘ │
+  └───────────────┘
+         │ Embeddings: all-MiniLM-L6-v2 (sentence-transformers)
+</div>
+
+<h2>4.2 Component Summary</h2>
+<table class="data">
+  <tr><th>Component</th><th>File</th><th>Technology</th><th>Role</th></tr>
+  <tr><td>Web Scraper</td><td><code>src/scraper.py</code></td><td>requests, BeautifulSoup4, lxml</td><td>Downloads &amp; cleans pandas docs</td></tr>
+  <tr><td>Q&amp;A Generator</td><td><code>src/qa_generator.py</code></td><td>Ollama REST API, llama3.2:3b</td><td>Creates structured Q&amp;A dataset</td></tr>
+  <tr><td>Vector Store</td><td><code>src/vector_store.py</code></td><td>ChromaDB, sentence-transformers</td><td>Embeds &amp; indexes docs and Q&amp;A pairs</td></tr>
+  <tr><td>Hybrid Retriever</td><td><code>src/retriever.py</code></td><td>LangChain, ChromaDB cosine similarity</td><td>Decides retrieval strategy per query</td></tr>
+  <tr><td>Chatbot</td><td><code>src/chatbot.py</code></td><td>LangChain, Groq API, llama-3.1-8b</td><td>Generates answers with context &amp; memory</td></tr>
+  <tr><td>UI</td><td><code>app.py</code></td><td>Streamlit</td><td>Web interface for user interaction</td></tr>
+  <tr><td>Config</td><td><code>config.py</code></td><td>python-dotenv</td><td>Central config &amp; secrets management</td></tr>
+</table>
+
+<!-- ══════════════════════════════════════════════════════════════
+     5. HYBRID RETRIEVAL EXPLANATION
+═══════════════════════════════════════════════════════════════ -->
+<div class="page-break"></div>
+<h1 class="section" id="s5">5. Hybrid Retrieval Explanation</h1>
+
+<h2>5.1 Motivation</h2>
+<p>
+  A RAG system must balance two goals: <strong>precision</strong> (returning the exact right answer)
+  and <strong>coverage</strong> (handling questions not in the Q&amp;A dataset). Pure Q&amp;A matching
+  is fast and precise but fails on novel phrasing. Pure document search is flexible but forces the LLM
+  to synthesise answers from long contexts, risking hallucination.
+</p>
+<p>
+  The <strong>hybrid approach</strong> implemented here uses a <em>threshold-based decision gate</em>:
+  if the user's question closely matches a known Q&amp;A pair, return the pre-validated answer directly.
+  Otherwise, fall back to semantic document retrieval and LLM generation.
+</p>
+
+<h2>5.2 Two-Store Architecture</h2>
+<p>Two separate ChromaDB collections are maintained:</p>
+<table class="data">
+  <tr><th>Store</th><th>Collection Name</th><th>Content</th><th>Embedding</th></tr>
+  <tr>
+    <td><strong>QA Store</strong></td>
+    <td><code>pandas_qa</code></td>
+    <td>Questions from Q&amp;A dataset (answers stored as metadata)</td>
+    <td><code>all-MiniLM-L6-v2</code></td>
+  </tr>
+  <tr>
+    <td><strong>Doc Store</strong></td>
+    <td><code>pandas_docs</code></td>
+    <td>Raw documentation chunks (500 chars, 50 overlap)</td>
+    <td><code>all-MiniLM-L6-v2</code></td>
+  </tr>
+</table>
+
+<h2>5.3 Retrieval Decision Logic</h2>
+<div class="arch" style="line-height:1.9">
+User Query
+    │
+    ▼
+QA Store → similarity_search_with_relevance_scores(query, k=1)
+    │
+    ├─── score ≥ 0.75 ───► Return pre-stored answer directly
+    │                       (mode = "qa_match")
+    │                       Fast, no LLM call needed
+    │
+    └─── score &lt; 0.75 ───► Doc Store → similarity_search(query, k=5)
+                            Retrieve top-5 chunks
+                            Build context prompt
+                            Groq LLM generates answer
+                            (mode = "doc_search")
+</div>
+
+<h2>5.4 Threshold Choice (0.75)</h2>
+<p>
+  The threshold of <strong>0.75 cosine similarity</strong> was set based on empirical testing with
+  <code>all-MiniLM-L6-v2</code> embeddings:
+</p>
+<ul>
+  <li>A score above 0.75 reliably indicates the user's phrasing matches a known question closely enough that the stored answer is correct and complete.</li>
+  <li>Below 0.75, the match is too uncertain and the LLM-generated answer (with fresh document context) is safer.</li>
+  <li>The threshold is configurable via <code>HYBRID_THRESHOLD</code> in <code>config.py</code>.</li>
+</ul>
+
+<h2>5.5 Embedding Model</h2>
+<p>
+  <strong><code>sentence-transformers/all-MiniLM-L6-v2</code></strong> was chosen as the embedding model:
+</p>
+<ul>
+  <li>Compact (80 MB) – fast to load and run on CPU</li>
+  <li>384-dimensional dense vectors – good quality for semantic search</li>
+  <li>Runs fully locally – no external API call for embeddings</li>
+  <li>Well-supported by LangChain's <code>HuggingFaceEmbeddings</code> wrapper</li>
+</ul>
+
+<h2>5.6 Conversation Memory</h2>
+<p>
+  The chatbot maintains a rolling window of the last <strong>6 conversation turns</strong>
+  (configurable via <code>MAX_HISTORY_TURNS</code>). Previous turns are included in the LLM message
+  list to allow follow-up questions. Memory is stored in-process (not persisted to disk) and can
+  be reset via the "Clear Chat" button in the UI.
+</p>
+
+<!-- ══════════════════════════════════════════════════════════════
+     6. CHATBOT INTERFACE & SCREENSHOTS
+═══════════════════════════════════════════════════════════════ -->
+<div class="page-break"></div>
+<h1 class="section" id="s6">6. Chatbot Interface &amp; Screenshots</h1>
+
+<h2>6.1 Interface Overview</h2>
+<p>
+  The chatbot is served as a <strong>Streamlit web app</strong> (<code>app.py</code>), accessible at
+  <code>http://localhost:8501</code> after running <code>streamlit run app.py</code>. The layout
+  consists of a sidebar with metadata and a main chat area.
+</p>
+
+<h2>6.2 Sidebar Features</h2>
+<ul>
+  <li><strong>Dataset Stats:</strong> Live metrics – Q&amp;A pair count, document chunk count, pages scraped, memory turns.</li>
+  <li><strong>Sample Questions:</strong> One-click example queries to demonstrate chatbot capabilities.</li>
+  <li><strong>Q&amp;A Preview:</strong> Expandable section showing 5 random Q&amp;A pairs from the dataset.</li>
+  <li><strong>Clear Chat:</strong> Button to reset conversation memory.</li>
+  <li><strong>Source link:</strong> Direct link to pandas User Guide.</li>
+</ul>
+
+<h2>6.3 Chat Interface Features</h2>
+<ul>
+  <li>Standard chat bubble layout (user messages right-aligned, assistant messages left).</li>
+  <li>Retrieval mode badge: <code>qa_match</code> (direct match) or <code>doc_search</code> (LLM-generated).</li>
+  <li>Confidence score displayed for each answer.</li>
+  <li>Source URL citation at the bottom of each response.</li>
+  <li>Matched question displayed when in <code>qa_match</code> mode.</li>
+</ul>
+
+<h2>6.4 Screenshots</h2>
+<div class="screenshot">
+  [Screenshot 1: Full chatbot interface – sidebar + chat area with sample question answered]<br><br>
+  <em>To add: Run <code>streamlit run app.py</code> and capture the main window showing a Q&amp;A response</em>
+</div>
+<div class="screenshot">
+  [Screenshot 2: qa_match mode – direct answer from Q&amp;A store with high confidence score]<br><br>
+  <em>Example query: "How do I create a DataFrame from a dictionary?"</em>
+</div>
+<div class="screenshot">
+  [Screenshot 3: doc_search mode – LLM-generated answer with source citations]<br><br>
+  <em>Example query: "What are the differences between merge and join?"</em>
+</div>
+<div class="screenshot">
+  [Screenshot 4: Sidebar showing dataset statistics and sample Q&amp;A pairs preview]
+</div>
+
+<div class="box green">
+  <strong>Note:</strong> Screenshots are placeholders to be filled after running the full pipeline
+  (vector store build + app launch). Add actual screenshots by running:
+  <code>streamlit run app.py</code> and using browser screenshot tools.
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════
+     7. LIMITATIONS & FUTURE IMPROVEMENTS
+═══════════════════════════════════════════════════════════════ -->
+<div class="page-break"></div>
+<h1 class="section" id="s7">7. Limitations &amp; Future Improvements</h1>
+
+<h2>7.1 Current Limitations</h2>
+<table class="data">
+  <tr><th>Limitation</th><th>Impact</th><th>Severity</th></tr>
+  <tr>
+    <td>Static dataset (no live updates)</td>
+    <td>If pandas releases a new version, the chatbot's knowledge does not update automatically. Answers may become outdated.</td>
+    <td>Medium</td>
+  </tr>
+  <tr>
+    <td>CPU-only inference (Q&amp;A gen)</td>
+    <td>Generating Q&amp;A pairs with <code>llama3.2:3b</code> on CPU is very slow (~1–3 min per page). A GPU would reduce this by 10–20×.</td>
+    <td>High (dev time)</td>
+  </tr>
+  <tr>
+    <td>Small model for Q&amp;A gen</td>
+    <td><code>llama3.2:3b</code> occasionally produces malformed JSON or low-quality questions due to limited capacity.</td>
+    <td>Medium</td>
+  </tr>
+  <tr>
+    <td>Fixed threshold (0.75)</td>
+    <td>The hybrid threshold was set manually. For some query types (e.g., code-heavy questions), a different threshold may be optimal.</td>
+    <td>Low</td>
+  </tr>
+  <tr>
+    <td>No reranking</td>
+    <td>The doc store returns the top-5 chunks by cosine similarity with no further reranking, which may not always be the most relevant 5 passages.</td>
+    <td>Low–Medium</td>
+  </tr>
+  <tr>
+    <td>In-memory conversation history</td>
+    <td>Chat history is lost on page refresh or server restart. No persistent sessions.</td>
+    <td>Low</td>
+  </tr>
+  <tr>
+    <td>Groq API rate limits</td>
+    <td>The chatbot uses a free-tier Groq API (6,000 TPM). Under heavy use, rate limit errors can occur.</td>
+    <td>Medium</td>
+  </tr>
+  <tr>
+    <td>Scope limited to User Guide</td>
+    <td>API Reference, Release Notes, and Changelog are not included, limiting coverage of less-common functions.</td>
+    <td>Medium</td>
+  </tr>
+</table>
+
+<h2>7.2 Future Improvements</h2>
+
+<h3>Short-Term (1–2 weeks)</h3>
+<ul>
+  <li><strong>Screenshot integration:</strong> Add actual chatbot screenshots to this report.</li>
+  <li><strong>Automated re-scraping:</strong> Schedule weekly scrape runs to keep the dataset current with new pandas releases.</li>
+  <li><strong>Evaluation metrics:</strong> Implement RAGAS or similar framework to measure answer faithfulness, relevance, and context precision.</li>
+</ul>
+
+<h3>Medium-Term (1–2 months)</h3>
+<ul>
+  <li><strong>GPU-accelerated Q&amp;A generation:</strong> Run <code>llama3.1:8b</code> or larger on a cloud GPU (e.g., Google Colab, RunPod) for higher-quality Q&amp;A pairs.</li>
+  <li><strong>Cross-encoder reranking:</strong> Add a second-stage reranker (e.g., <code>cross-encoder/ms-marco-MiniLM-L-6-v2</code>) to improve doc store precision.</li>
+  <li><strong>BM25 + vector fusion:</strong> Combine BM25 keyword search with semantic vector search using Reciprocal Rank Fusion for better hybrid retrieval.</li>
+  <li><strong>Persistent chat sessions:</strong> Store conversation history in SQLite or Redis for multi-session continuity.</li>
+  <li><strong>Expanded coverage:</strong> Include pandas API Reference pages for function-level documentation.</li>
+</ul>
+
+<h3>Long-Term</h3>
+<ul>
+  <li><strong>Multi-library support:</strong> Extend to NumPy, Matplotlib, and Scikit-learn documentation to create a comprehensive Python data science chatbot.</li>
+  <li><strong>Streaming responses:</strong> Implement token-level streaming in Streamlit for a more responsive chat experience.</li>
+  <li><strong>User feedback loop:</strong> Collect thumbs-up/down feedback on answers to continuously improve retrieval thresholds and fine-tune models.</li>
+  <li><strong>Self-hosted deployment:</strong> Package as a Docker container for reproducible, portable deployment.</li>
+</ul>
+
+<!-- ══════════════════════════════════════════════════════════════
+     8. LEARNINGS
+═══════════════════════════════════════════════════════════════ -->
+<div class="page-break"></div>
+<h1 class="section" id="s8">8. Learnings</h1>
+
+<h2>8.1 Technical Learnings</h2>
+
+<h3>RAG System Design</h3>
+<p>
+  Building this chatbot made clear that <strong>data quality is the dominant factor</strong> in RAG
+  system quality. The scraping and Q&amp;A generation pipeline spent more time and effort than the
+  chatbot itself. Clean, well-structured documents produce better embeddings and more relevant retrievals.
+</p>
+
+<h3>Hybrid Retrieval Value</h3>
+<p>
+  The two-store hybrid approach proved its value early in testing. For frequently asked, textbook
+  questions (e.g., "How do I read a CSV?"), the QA store returns a polished, pre-validated answer
+  in milliseconds without an LLM call. For complex or novel questions, the doc store + LLM path
+  provides flexible, context-grounded answers. Neither approach alone would have been as effective.
+</p>
+
+<h3>LLM Quirks with JSON Output</h3>
+<p>
+  Small language models (3B parameters) are inconsistent at producing valid JSON under complex prompts,
+  especially when the context chunk contains code blocks or special characters. Key lessons:
+</p>
+<ul>
+  <li>Always implement retry logic with a clear error log – silent failures lose data.</li>
+  <li>Markdown fence stripping is essential since models often wrap JSON in <code>```json</code> blocks.</li>
+  <li>Reducing the number of requested pairs (from 8 to 5) and chunk size (from 3,000 to 1,500 chars) significantly improved JSON reliability.</li>
+</ul>
+
+<h3>API Rate Limits</h3>
+<p>
+  Working with free-tier LLM APIs (Groq: 6,000 TPM) on a dataset generation task is impractical
+  without careful rate management. The pivot to local Ollama inference for Q&amp;A generation
+  eliminated rate limits entirely, at the cost of much slower throughput. The key insight is:
+  <strong>use local models for batch offline tasks, cloud APIs for interactive online tasks.</strong>
+</p>
+
+<h3>Embedding Model Selection</h3>
+<p>
+  <code>all-MiniLM-L6-v2</code> is a pragmatic choice: small enough to run comfortably on CPU,
+  yet high enough quality for semantic similarity search within a narrow technical domain.
+  For production systems, a domain-specific code-aware embedding model (e.g., CodeBERT derivatives)
+  might yield better results for documentation with many code examples.
+</p>
+
+<h2>8.2 Process Learnings</h2>
+<ul>
+  <li>
+    <strong>Start with a working scraper before designing the LLM pipeline.</strong> Data quality
+    issues in raw text (noise, structure problems) compound through every downstream step.
+  </li>
+  <li>
+    <strong>Test each pipeline stage independently</strong> (scraper → Q&amp;A gen → vector store →
+    retriever → chatbot) before integrating, rather than building everything first and debugging end-to-end.
+  </li>
+  <li>
+    <strong>Version control from the start.</strong> Pushing to GitHub immediately ensured no work
+    was lost during debugging sessions and made rollbacks easy.
+  </li>
+  <li>
+    <strong>Centralise configuration.</strong> Having a single <code>config.py</code> file made
+    switching between models, paths, and hyperparameters trivial.
+  </li>
+  <li>
+    <strong>RAM constraints are real engineering constraints.</strong> The inability to run
+    <code>llama3.1:8b</code> locally (4.8 GB needed, 4.5 GB available) forced a creative solution
+    (use the 3B model for generation, use the cloud API for inference) that turned out to be a
+    better architectural choice anyway.
+  </li>
+</ul>
+
+<!-- ══════════════════════════════════════════════════════════════
+     APPENDIX – SAMPLE DATA
+═══════════════════════════════════════════════════════════════ -->
+<div class="page-break"></div>
+<h1 class="section" id="s9">Appendix – Sample Data</h1>
+
+<h2>A.1 Raw Page Sample – 10 Minutes to pandas</h2>
+<div class="box">
+  <strong>File:</strong> <code>data/raw/docs__user_guide__10min.html.txt</code><br>
+  <strong>URL:</strong> https://pandas.pydata.org/docs/user_guide/10min.html<br>
+  <strong>Content excerpt (first 500 chars of body):</strong>
+</div>
+<pre><code>URL: https://pandas.pydata.org/docs/user_guide/10min.html
+TITLE: 10 minutes to pandas
+SCRAPED: 2026-05-21T...
+--------------------------------------------------
+10 minutes to pandas
+
+This is a short introduction overview of pandas objects, subsections,
+and commonly used methods in pandas.
+
+By convention, we import as follows:
+
+import numpy as np
+import pandas as pd
+
+Object creation
+
+Creating a Series by passing a list of values, letting pandas create
+a default integer index:
+
+s = pd.Series([1, 3, 5, np.nan, 6, 8])
+</code></pre>
+
+<h2>A.2 Sample Q&amp;A Pairs</h2>
+<p>The following are representative Q&amp;A pairs generated by the pipeline:</p>
+<table class="data">
+  <tr><th>#</th><th>Question</th><th>Answer</th><th>Source Page</th></tr>
+  <tr>
+    <td>1</td>
+    <td>How do you create a DataFrame from a dictionary in pandas?</td>
+    <td>You can create a DataFrame by passing a dictionary of lists to <code>pd.DataFrame()</code>. Each key becomes a column name and the corresponding list becomes the column values. For example: <code>pd.DataFrame({'A': [1,2,3], 'B': [4,5,6]})</code>.</td>
+    <td>10min.html</td>
+  </tr>
+  <tr>
+    <td>2</td>
+    <td>What is the purpose of the <code>loc</code> accessor in pandas?</td>
+    <td><code>loc</code> is used for label-based indexing, meaning you select rows and columns by their index labels. It is inclusive on both ends of a slice. For example, <code>df.loc['2021-01-01':'2021-01-31', 'A']</code> returns all rows between those two date labels for column A.</td>
+    <td>indexing.html</td>
+  </tr>
+  <tr>
+    <td>3</td>
+    <td>How does <code>groupby</code> work in pandas?</td>
+    <td><code>groupby</code> splits a DataFrame into groups based on one or more columns, applies a function to each group independently, and then combines the results. A typical usage is <code>df.groupby('category')['value'].mean()</code> to compute the mean value per category.</td>
+    <td>groupby.html</td>
+  </tr>
+  <tr>
+    <td>4</td>
+    <td>What is the difference between <code>merge</code> and <code>concat</code> in pandas?</td>
+    <td><code>merge</code> combines two DataFrames based on shared column values (like an SQL join), while <code>concat</code> stacks DataFrames along an axis (rows or columns) without matching on values. Use <code>merge</code> for relational joins and <code>concat</code> for appending datasets.</td>
+    <td>merging.html</td>
+  </tr>
+  <tr>
+    <td>5</td>
+    <td>How do you handle missing values (<code>NaN</code>) in pandas?</td>
+    <td>Pandas provides several methods: <code>dropna()</code> removes rows/columns with any NaN, <code>fillna(value)</code> replaces NaN with a specified value, and <code>interpolate()</code> fills NaN using interpolation. <code>isna()</code> or <code>isnull()</code> detects missing values as a boolean mask.</td>
+    <td>missing_data.html</td>
+  </tr>
+  <tr>
+    <td>6</td>
+    <td>What does <code>df.describe()</code> return?</td>
+    <td><code>describe()</code> computes descriptive statistics for each numeric column: count, mean, standard deviation, min, 25th/50th/75th percentile, and max. It provides a quick statistical summary of the DataFrame's numeric columns.</td>
+    <td>basics.html</td>
+  </tr>
+  <tr>
+    <td>7</td>
+    <td>How can you read a CSV file into a pandas DataFrame?</td>
+    <td>Use <code>pd.read_csv('filename.csv')</code>. Key parameters include <code>sep</code> for the delimiter, <code>index_col</code> to set a column as the index, <code>parse_dates</code> for automatic date parsing, and <code>dtype</code> to specify column types explicitly.</td>
+    <td>io.html</td>
+  </tr>
+  <tr>
+    <td>8</td>
+    <td>How do you apply a function to each element of a DataFrame?</td>
+    <td><code>apply()</code> applies a function along an axis (rows or columns), <code>applymap()</code>/<code>map()</code> applies element-wise to a DataFrame or Series respectively. For simple operations, vectorised methods (e.g., <code>df['col'] * 2</code>) are preferred for performance.</td>
+    <td>basics.html</td>
+  </tr>
+  <tr>
+    <td>9</td>
+    <td>What is Copy-on-Write in pandas 2.0?</td>
+    <td>Copy-on-Write (CoW) is a memory optimisation introduced as the default in pandas 2.0. Under CoW, any indexing or assignment operation that would modify data creates a copy only when needed, preventing unexpected modifications of the original DataFrame through views.</td>
+    <td>copy_on_write.html</td>
+  </tr>
+  <tr>
+    <td>10</td>
+    <td>How do you convert a DataFrame column to datetime type?</td>
+    <td>Use <code>pd.to_datetime(df['column'])</code> to parse string or numeric values into datetime objects. Once converted, datetime-specific attributes (<code>.dt.year</code>, <code>.dt.month</code>, etc.) and methods become available on the Series.</td>
+    <td>timeseries.html</td>
+  </tr>
+</table>
+
+<h2>A.3 Data Files Location</h2>
+<table class="data">
+  <tr><th>Artifact</th><th>Path</th><th>Description</th></tr>
+  <tr><td>Raw pages</td><td><code>data/raw/*.txt</code></td><td>23 cleaned text files, one per scraped page</td></tr>
+  <tr><td>Q&amp;A dataset</td><td><code>data/qa_dataset.csv</code></td><td>Generated Q&amp;A pairs (columns: question, answer, source_page)</td></tr>
+  <tr><td>Vector store</td><td><code>chroma_db/</code></td><td>ChromaDB persistent storage (generated by vector_store.py)</td></tr>
+</table>
+
+<h2>A.4 Technology Stack Summary</h2>
+<div style="display:flex; flex-wrap:wrap; gap:6px; margin: 12px 0;">
+  <span class="tag tech">Python 3.12</span>
+  <span class="tag tech">LangChain 0.2</span>
+  <span class="tag tech">ChromaDB 0.5</span>
+  <span class="tag tech">Streamlit 1.36</span>
+  <span class="tag tech">Ollama 0.24</span>
+  <span class="tag tech">Groq API</span>
+  <span class="tag tech">llama3.2:3b</span>
+  <span class="tag tech">llama-3.1-8b-instant</span>
+  <span class="tag tech">all-MiniLM-L6-v2</span>
+  <span class="tag tech">BeautifulSoup4</span>
+  <span class="tag tech">sentence-transformers</span>
+  <span class="tag tech">python-dotenv</span>
+  <span class="tag tech">pandas 2.2</span>
+  <span class="tag tech">tqdm</span>
+  <span class="tag">requests</span>
+  <span class="tag">lxml</span>
+  <span class="tag">regex</span>
+</div>
+
+<div class="footer">
+  RAG QA Chatbot – Project Report &nbsp;|&nbsp; AGAI-03 Assignment 1 &nbsp;|&nbsp; May 2026 &nbsp;|&nbsp;
+  Generated from source: <code>https://github.com/eboekenh/rag-qa-chatbot</code>
+</div>
+
+</div><!-- /page -->
+</body>
+</html>

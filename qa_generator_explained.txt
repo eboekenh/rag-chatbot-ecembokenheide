@@ -1,0 +1,1281 @@
+================================================================================
+       HOW qa_generator.py WORKS — DETAILED EXPLANATION
+================================================================================
+
+
+OVERVIEW
+--------
+qa_generator.py reads raw pandas documentation files, splits them into small
+pieces (chunks), sends each chunk to an AI model (Groq), and collects the
+generated question-answer pairs into a CSV file. This CSV is later used to
+train/populate the RAG chatbot's knowledge base.
+
+
+================================================================================
+STEP 1 — LOAD RAW PAGES  (function: load_raw_pages)
+================================================================================
+
+The script reads all .txt files from the "data/raw/" folder.
+Each file contains one scraped pandas documentation page.
+
+Each file has a small header at the top:
+
+    URL: https://pandas.pydata.org/docs/user_guide/10min.html
+    TITLE: 10 minutes to pandas
+    --------------------
+    (actual page content starts here...)
+
+The function extracts the URL, title, and content separately
+and returns a list of 23 page objects.
+
+    data/raw/
+    ├── docs__user_guide__10min.html.txt        ─┐
+    ├── docs__user_guide__advanced.html.txt      │  load_raw_pages()
+    ├── docs__user_guide__basics.html.txt        │  reads all of these
+    ├── ...                                      │
+    └── docs__user_guide__window.html.txt       ─┘
+
+    Result: list of 23 pages, each with { url, title, content }
+
+
+================================================================================
+STEP 2 — CHUNKING  (function: chunk_for_qa)
+================================================================================
+
+AI models cannot process very long texts at once — they have a limit.
+So each page is split into smaller pieces called "chunks".
+
+    Max chunk size = 1500 characters
+
+HOW CHUNKING WORKS:
+The text is first split by paragraphs (double newlines "\n\n").
+Paragraphs are collected into a chunk until adding the next paragraph
+would exceed 1500 characters. Then a new chunk starts.
+
+    ┌─────────────────────────────────────────────┐
+    │           Full Page Content                 │
+    │           (~36,000 characters)              │
+    └──────────────┬──────────────────────────────┘
+                   │  chunk_for_qa(max_chars=1500)
+                   ▼
+    ┌──────────┐ ┌──────────┐ ┌──────────┐     ┌──────────┐
+    │ Chunk 1  │ │ Chunk 2  │ │ Chunk 3  │ ... │ Chunk 24 │
+    │ ~1500    │ │ ~1500    │ │ ~1500    │     │ ~1500    │
+    │ chars    │ │ chars    │ │ chars    │     │ chars    │
+    └──────────┘ └──────────┘ └──────────┘     └──────────┘
+
+Special case: If a single paragraph is longer than 1500 characters,
+it is further split by sentences (at . ! ? boundaries).
+
+Chunks shorter than 100 characters are discarded (too small to be useful).
+
+
+================================================================================
+STEP 3 — Q&A GENERATION  (function: generate_qa_for_chunk)
+================================================================================
+
+For each chunk, the script sends a request to the Groq API (an online AI).
+
+The prompt sent to Groq looks like this:
+
+    ┌──────────────────────────────────────────────────────────────┐
+    │  You are a Q&A dataset generator for a RAG chatbot about    │
+    │  the pandas library.                                         │
+    │                                                              │
+    │  Given the text below, generate exactly 5 question-answer   │
+    │  pairs that test real comprehension.                         │
+    │  - Questions must be specific and answerable from the text   │
+    │  - Answers must be concise but complete (2-4 sentences)      │
+    │  - Cover different aspects of the text                       │
+    │                                                              │
+    │  Return ONLY a valid JSON object...                          │
+    │                                                              │
+    │  TEXT:                                                       │
+    │  [the actual chunk text goes here]                           │
+    └──────────────────────────────────────────────────────────────┘
+
+Groq responds with JSON like this:
+
+    {
+      "pairs": [
+        {
+          "question": "What does DataFrame.head() return?",
+          "answer": "DataFrame.head() returns the first 5 rows by default..."
+        },
+        {
+          "question": "How do you create a DataFrame from a dictionary?",
+          "answer": "You can create a DataFrame by passing a dictionary..."
+        },
+        ...
+      ]
+    }
+
+The script then parses this JSON and extracts the question-answer pairs.
+
+ERROR HANDLING:
+    - If the JSON is invalid → retry up to 2 more times
+    - If the rate limit is hit (too many requests) → wait 60 seconds
+    - If all retries fail → skip this chunk and continue
+
+
+================================================================================
+STEP 4 — THE FULL LOOP
+================================================================================
+
+The entire process visualized:
+
+    for each of 23 pages:
+    │
+    ├── Load page content
+    ├── Split into ~24 chunks
+    │
+    └── for each chunk:
+        │
+        ├── Build prompt (fill in {n}=5 and {chunk}=text)
+        ├── Send to Groq API
+        ├── Receive JSON response
+        ├── Parse 5 question-answer pairs
+        └── Add pairs to the collection
+
+    ┌──────────────────────────────────────────────────────────────┐
+    │                    FULL PIPELINE                             │
+    │                                                              │
+    │  23 pages                                                    │
+    │    × ~24 chunks per page                                     │
+    │    × 5 Q&A pairs per chunk                                   │
+    │    = ~2,760 question-answer pairs (before deduplication)     │
+    └──────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+STEP 5 — DEDUPLICATION  (function: deduplicate)
+================================================================================
+
+Different chunks from different pages might generate very similar questions.
+The deduplication step removes exact duplicate questions (case-insensitive).
+
+    ~2,760 pairs  →  deduplicate()  →  ~2,500 unique pairs (estimate)
+
+The comparison is done on the question text only (lowercased and stripped).
+
+
+================================================================================
+STEP 6 — SAVE TO CSV  (run_qa_generator)
+================================================================================
+
+All unique pairs are saved to:  data/qa_dataset.csv
+
+The CSV has 3 columns:
+
+    question          | answer                        | source_page
+    ──────────────────┼───────────────────────────────┼────────────────────────
+    What does head()  │ head() returns the first 5... │ https://pandas.pydata...
+    How to merge...   │ You can merge DataFrames...   │ https://pandas.pydata...
+    ...               │ ...                           │ ...
+
+This file is later used by the chatbot to find relevant answers
+when a user asks a question.
+
+
+================================================================================
+COMPLETE FLOW DIAGRAM
+================================================================================
+
+    ┌─────────────────┐
+    │   data/raw/     │   23 .txt files (scraped pandas documentation)
+    │   *.html.txt    │
+    └────────┬────────┘
+             │ load_raw_pages()
+             ▼
+    ┌─────────────────┐
+    │   23 pages      │   Each with: url, title, content
+    └────────┬────────┘
+             │ chunk_for_qa()  [for each page]
+             ▼
+    ┌─────────────────┐
+    │  ~552 chunks    │   Each chunk: max 1500 characters
+    │  (23 × ~24)     │
+    └────────┬────────┘
+             │ generate_qa_for_chunk()  [for each chunk]
+             │ → sends to Groq API
+             ▼
+    ┌─────────────────┐
+    │ ~2,760 Q&A pairs│   Each: question + answer + source URL
+    └────────┬────────┘
+             │ deduplicate()
+             ▼
+    ┌─────────────────┐
+    │  ~2,500 unique  │
+    │   Q&A pairs     │
+    └────────┬────────┘
+             │ save to CSV
+             ▼
+    ┌─────────────────┐
+    │ data/           │
+    │ qa_dataset.csv  │   Ready to be used by the chatbot!
+    └─────────────────┘
+
+
+================================================================================
+KEY CONFIGURATION VALUES  (from config.py)
+================================================================================
+
+    GROQ_QA_MODEL   = "llama-3.1-8b-instant"   AI model used for generation
+    CHUNK_SIZE      = 1500 characters            Max size of each text chunk
+    n_pairs         = 5                          Q&A pairs generated per chunk
+    max_retries     = 2                          Retry attempts on JSON error
+    RAW_DATA_DIR    = "data/raw"                 Input folder
+    QA_DATASET_PATH = "data/qa_dataset.csv"      Output file
+
+
+================================================================================
+WHY IS THIS NEEDED?
+================================================================================
+
+The qa_dataset.csv is used by the RAG (Retrieval-Augmented Generation) chatbot.
+When a user asks a question:
+
+    1. The chatbot searches the qa_dataset for similar questions
+    2. It finds the most relevant Q&A pairs
+    3. It uses them as context to generate a precise answer
+
+Without this dataset, the chatbot would have no knowledge about pandas.
+The qa_generator.py is the step that "teaches" the chatbot about pandas
+by converting raw documentation into structured Q&A pairs.
+
+================================================================================
+
+
+================================================================================
+       PANDAS RAG CHATBOT — FULL SYSTEM OVERVIEW
+================================================================================
+
+
+WHAT IS THIS SYSTEM?
+--------------------
+This is a RAG (Retrieval-Augmented Generation) chatbot that answers questions
+about the pandas Python library. Instead of relying purely on a generic AI
+model, it first searches through the actual pandas documentation to find
+relevant information, then uses that as context to generate a precise answer.
+
+Think of it like a very smart search engine combined with a chatbot.
+
+
+================================================================================
+THE COMPLETE ARCHITECTURE
+================================================================================
+
+                        ┌─────────────────────────────┐
+                        │      USER (Browser)          │
+                        │   asks: "How do I merge      │
+                        │   two DataFrames?"           │
+                        └──────────────┬──────────────┘
+                                       │
+                                       ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │                      app.py (Streamlit UI)                   │
+    │   - Web interface the user sees and types into               │
+    │   - Sends user question to the chatbot                       │
+    │   - Displays the answer back to the user                     │
+    └──────────────────────────────┬───────────────────────────────┘
+                                   │
+                                   ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │                   chatbot.py (RAGChatbot)                    │
+    │   - Receives the user question                               │
+    │   - Asks the retriever to find relevant content              │
+    │   - Builds a prompt with that content                        │
+    │   - Sends prompt to Groq API (llama-3.1-8b-instant)        │
+    │   - Returns the AI-generated answer                          │
+    │   - Keeps memory of the last 6 conversation turns            │
+    └───────────────────────────┬──────────────────────────────────┘
+                                │
+                                ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │                  retriever.py (HybridRetriever)              │
+    │                                                              │
+    │   STRATEGY 1 — QA Match (fast path):                        │
+    │   Search qa_dataset for a question that matches closely.     │
+    │   If confidence score ≥ 0.75 → return the stored answer     │
+    │   directly (no need to call the AI model at all!)           │
+    │                                                              │
+    │   STRATEGY 2 — Doc Search (fallback):                       │
+    │   Search raw documentation chunks for relevant passages.     │
+    │   Return the top 5 chunks as context for the AI model.      │
+    └──────┬────────────────────────────────┬─────────────────────┘
+           │                                │
+           ▼                                ▼
+    ┌──────────────┐                ┌───────────────┐
+    │  QA Store    │                │  Doc Store    │
+    │  (ChromaDB)  │                │  (ChromaDB)   │
+    │              │                │               │
+    │  2,789 Q&A   │                │  3,015 doc    │
+    │  pairs as    │                │  chunks as    │
+    │  vectors     │                │  vectors      │
+    │  (questions  │                │  (CHUNK_SIZE  │
+    │  embedded    │                │  =500, OVER-  │
+    │  directly,   │                │  LAP=100)     │
+    │  no chunking)│                │               │
+    └──────────────┘                └───────────────┘
+           │                                │
+           └────────────┬───────────────────┘
+                        │  (both built by vector_store.py)
+                        ▼
+    ┌──────────────────────────────────────────────────────────────┐
+    │                   Groq API (llama-3.1-8b-instant)           │
+    │   - Runs in the cloud via Groq API                          │
+    │   - Model: llama-3.1-8b-instant                             │
+    │   - Receives: system prompt + context + user question        │
+    │   - Returns: a natural language answer                       │
+    └──────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+THE SCRIPTS — WHAT EACH ONE DOES
+================================================================================
+
+There are two types of scripts:
+
+    SETUP SCRIPTS (run once, before the chatbot starts):
+    ┌──────────────────┬──────────────────────────────────────────────────────┐
+    │ scraper.py       │ Downloads 23 pandas documentation pages from the     │
+    │                  │ internet and saves them as clean .txt files.          │
+    ├──────────────────┼──────────────────────────────────────────────────────┤
+    │ qa_generator.py  │ Reads the .txt files, splits them into chunks, sends │
+    │                  │ each chunk to Groq AI, and collects 2,500+ Q&A pairs  │
+    │                  │ into data/qa_dataset.csv.                             │
+    ├──────────────────┼──────────────────────────────────────────────────────┤
+    │ vector_store.py  │ Reads the .txt files AND qa_dataset.csv, converts    │
+    │                  │ them into numeric vectors (embeddings), and stores    │
+    │                  │ them in ChromaDB. Doc chunks use CHUNK_SIZE=500 and   │
+    │                  │ CHUNK_OVERLAP=100. Q&A questions are embedded as-is   │
+    │                  │ (no chunking needed — each question is already short).│
+    └──────────────────┴──────────────────────────────────────────────────────┘
+
+    RUNTIME SCRIPTS (run every time the chatbot is used):
+    ┌──────────────────┬──────────────────────────────────────────────────────┐
+    │ app.py           │ The web interface (Streamlit). Start with:           │
+    │                  │ streamlit run app.py                                 │
+    ├──────────────────┼──────────────────────────────────────────────────────┤
+    │ chatbot.py       │ The brain of the chatbot. Coordinates retrieval,     │
+    │                  │ prompt building, and response generation.             │
+    ├──────────────────┼──────────────────────────────────────────────────────┤
+    │ retriever.py     │ Searches the vector databases for relevant content.  │
+    └──────────────────┴──────────────────────────────────────────────────────┘
+
+
+================================================================================
+THE DATA — HOW IT FLOWS THROUGH THE SYSTEM
+================================================================================
+
+    SETUP PHASE (done once):
+
+    Internet (pandas docs)
+          │
+          │  scraper.py
+          ▼
+    data/raw/*.txt              ← 23 clean text files
+          │
+          ├──────────────────────────────────────┐
+          │  qa_generator.py                     │  vector_store.py
+          ▼                                      ▼
+    data/qa_dataset.csv         chroma_db/qa/    chroma_db/docs/
+    (2,789 Q&A pairs)           (QA vectors,     (Doc chunk vectors,
+                                 no chunking,     CHUNK_SIZE=500,
+                                 2,789 entries)   CHUNK_OVERLAP=100,
+                                                  3,015 chunks)
+
+
+    RUNTIME PHASE (every user question):
+
+    User question
+          │
+          ▼
+    retriever.py searches chroma_db/qa/   → score ≥ 0.75? → return stored answer
+          │ (if score < 0.75)
+          ▼
+    retriever.py searches chroma_db/docs/ → top 5 relevant chunks
+          │
+          ▼
+    chatbot.py builds prompt:
+          [system role] + [context chunks] + [conversation history] + [question]
+          │
+          ▼
+    Groq API (llama-3.1-8b-instant) generates answer
+          │
+          ▼
+    User sees the answer in the browser
+
+
+================================================================================
+KEY CONCEPT — WHAT ARE VECTORS / EMBEDDINGS?
+================================================================================
+
+Text cannot be searched mathematically. So every piece of text
+(questions, answers, doc chunks) is converted to a list of numbers
+called a "vector" or "embedding".
+
+Example:
+    "How do I merge DataFrames?"  →  [0.12, -0.45, 0.78, 0.03, ...]
+    "How to combine two tables?"  →  [0.11, -0.43, 0.76, 0.05, ...]
+
+These two sentences have very SIMILAR numbers because they mean the same thing.
+ChromaDB finds the closest matching vectors instantly — even across 2,500 entries.
+
+This is what makes the chatbot smart: it finds semantically similar content,
+not just exact keyword matches.
+
+
+================================================================================
+KEY CONCEPT — WHAT IS RAG?
+================================================================================
+
+RAG = Retrieval-Augmented Generation
+
+Without RAG:
+    User: "How does DataFrame.merge() work?"
+    AI: (might hallucinate or give outdated info)
+
+With RAG:
+    1. RETRIEVE: Find the actual pandas docs about merge()
+    2. AUGMENT:  Add those docs to the AI's prompt as context
+    3. GENERATE: AI answers based only on the real documentation
+
+The AI is told: "Answer ONLY based on the provided context."
+This prevents the AI from making things up (hallucination).
+
+
+================================================================================
+FULL SETUP ORDER (first time)
+================================================================================
+
+    Step 1:  python src/scraper.py          → creates data/raw/*.txt
+    Step 2:  python src/qa_generator.py     → creates data/qa_dataset.csv
+    Step 3:  python src/vector_store.py     → creates chroma_db/ database
+    Step 4:  streamlit run app.py           → starts the chatbot web UI
+
+    Note: Steps 1-3 are already done in this project.
+    You only need Step 4 to use the chatbot.
+
+
+================================================================================
+HOW TO RUN EACH SCRIPT — STEP BY STEP
+================================================================================
+
+BEFORE ANYTHING — activate the virtual environment:
+----------------------------------------------------
+    cd C:\Users\birli\Downloads\ragqachatbot\rag-qa-chatbot
+    .venv\Scripts\Activate.ps1
+
+    You should see (.venv) at the start of the terminal line.
+    ALL commands below must be run with the venv activated.
+
+
+────────────────────────────────────────────────────────────────────────────────
+STEP 1 — scraper.py   (download documentation)
+────────────────────────────────────────────────────────────────────────────────
+
+    COMMAND:
+        python src/scraper.py
+
+    WHAT IT DOES:
+        Downloads 23 pandas documentation pages from pandas.pydata.org
+        and saves them as clean .txt files in data/raw/
+
+    EXPECTED OUTPUT:
+        Scraping 23 pages → data/raw
+        100%|████████████| 23/23 [00:46<00:00, ...]
+        Done: 23 saved, 0 failed.
+
+    OUTPUT FILES:
+        data/raw/docs__user_guide__10min.html.txt
+        data/raw/docs__user_guide__basics.html.txt
+        ... (23 files total)
+
+    WHEN TO RUN:
+        Only once. Or again if you want to refresh the documentation.
+        Already done — data/raw/ already contains the files.
+
+    REQUIRES:
+        Internet connection
+
+
+────────────────────────────────────────────────────────────────────────────────
+STEP 2 — qa_generator.py   (generate Q&A pairs)
+────────────────────────────────────────────────────────────────────────────────
+
+    COMMAND:
+        python src/qa_generator.py
+
+    WHAT IT DOES:
+        Reads the .txt files, splits them into 1500-character chunks,
+        sends each chunk to Groq AI, collects the Q&A pairs into a CSV file.
+
+    EXPECTED OUTPUT:
+        Loaded 23 pages from data/raw
+        Generating Q&A:   4%|██  | 1/23 [01:00<...]
+          Chunk 1/25 → 5 pairs  (gesamt: 1 chunks)
+          Chunk 2/25 → 5 pairs  (gesamt: 2 chunks)
+          ...
+          10 minutes to pandas: 25 chunks → 120 pairs
+        Generating Q&A: 100%|████| 23/23 [...]
+        Total Q&A pairs after deduplication: ~2500
+        Saved 2500 pairs to data/qa_dataset.csv
+
+    OUTPUT FILE:
+        data/qa_dataset.csv
+
+    WHEN TO RUN:
+        Only once. Or again if you want to regenerate the Q&A dataset.
+
+    REQUIRES:
+        - GROQ_API_KEY set in .env file
+        - data/raw/ must exist (Step 1 must be done first)
+        - Internet connection (calls Groq API)
+
+    HOW LONG:
+        ~24 hours with Groq API free tier 
+        Several days on CPU without GPU (very slow — do NOT use Ollama for this)
+
+
+────────────────────────────────────────────────────────────────────────────────
+STEP 3 — vector_store.py   (build search database)
+────────────────────────────────────────────────────────────────────────────────
+
+    COMMAND:
+        python src/vector_store.py
+
+    WHAT IT DOES:
+        Converts all documentation chunks AND all Q&A pairs into numeric
+        vectors (embeddings) and stores them in a ChromaDB database.
+        This makes instant semantic search possible at runtime.
+
+    EXPECTED OUTPUT:
+        Loading embedding model: all-MiniLM-L6-v2
+        Chunking 23 pages...
+        Created ~1500 chunks
+        Building doc store → chroma_db/docs
+        Doc store ready: 1500 chunks indexed
+        Building QA store → chroma_db/qa
+        QA store ready: 2500 pairs indexed
+
+    OUTPUT FOLDER:
+        chroma_db/
+        ├── docs/    ← documentation chunk vectors
+        └── qa/      ← Q&A pair vectors
+
+    WHEN TO RUN:
+        Only once. Or again after re-running Steps 1 or 2.
+
+    REQUIRES:
+        - data/raw/ must exist (Step 1 done)
+        - data/qa_dataset.csv must exist (Step 2 done)
+        - No internet needed (embedding model runs locally)
+
+    HOW LONG:
+        ~2-5 minutes (runs on CPU, no GPU needed)
+
+
+────────────────────────────────────────────────────────────────────────────────
+STEP 4 — app.py   (start the chatbot)
+────────────────────────────────────────────────────────────────────────────────
+
+    COMMAND:
+        streamlit run app.py
+
+    WHAT IT DOES:
+        Starts the web interface. Opens automatically in your browser at:
+        http://localhost:8501
+
+    EXPECTED OUTPUT:
+        Loading vector stores...
+        Retriever ready.
+
+        You can now view your Streamlit app in your browser.
+        Local URL: http://localhost:8501
+
+    WHEN TO RUN:
+        Every time you want to use the chatbot.
+        Keep the terminal open — closing it stops the chatbot.
+
+    REQUIRES:
+        - GROQ_API_KEY set in .env file
+        - chroma_db/ must exist (Step 3 done)
+
+    TO STOP:
+        Press Ctrl+C in the terminal
+
+
+================================================================================
+QUICK REFERENCE — ALL COMMANDS IN ORDER
+================================================================================
+
+    # 0. Make sure .env contains your GROQ_API_KEY
+
+    # 1. Open a terminal, activate venv
+    cd C:\Users\birli\Downloads\ragqachatbot\rag-qa-chatbot
+    .venv\Scripts\Activate.ps1
+
+    # 2. Setup (only needed once — already done!)
+    python src/scraper.py
+    python src/qa_generator.py
+    python src/vector_store.py
+
+    # 3. Start the chatbot (every time)
+    streamlit run app.py
+
+================================================================================
+
+================================================================================
+       HOW retriever.py WORKS — DETAILED EXPLANATION
+================================================================================
+
+
+OVERVIEW
+--------
+retriever.py is the "search engine" of the chatbot. When a user asks a
+question, the retriever decides HOW to find the best answer — either from
+the pre-generated Q&A pairs, or from the raw documentation chunks.
+
+It uses a "hybrid" strategy: try the fast path first, fall back if needed.
+
+
+================================================================================
+THE TWO SEARCH STRATEGIES
+================================================================================
+
+STRATEGY 1 — QA Match (fast path)
+-----------------------------------
+Search the qa_dataset for a question that closely matches the user's question.
+
+    User asks: "How do I read a CSV file?"
+         ↓
+    Search qa_store for similar questions...
+         ↓
+    Found: "How can you load a CSV file into a DataFrame?" (score: 0.89)
+         ↓
+    score 0.89 ≥ threshold 0.75 → return the stored answer immediately!
+
+No AI model call needed. Fast and precise.
+
+
+STRATEGY 2 — Doc Search (fallback)
+------------------------------------
+If no Q&A match is good enough (score < 0.75), search the raw documentation.
+
+    User asks: "What is the difference between loc and iloc?"
+         ↓
+    Search qa_store → best score: 0.61 (below threshold)
+         ↓
+    Fall back: search doc_store for relevant text chunks...
+         ↓
+    Return top 5 most relevant documentation passages
+         ↓
+    chatbot.py sends those passages + question to Ollama for an answer
+
+
+================================================================================
+THE HYBRID THRESHOLD
+================================================================================
+
+    config.py:  HYBRID_THRESHOLD = 0.75
+
+This number controls when a QA match is "good enough":
+
+    score ≥ 0.75  →  use stored answer (Strategy 1)
+    score < 0.75  →  search documentation (Strategy 2)
+
+    score = 1.0  means perfect match (identical question)
+    score = 0.0  means completely unrelated
+
+You can tune this value:
+    - Higher (e.g. 0.90) → more questions go to doc search (more AI calls)
+    - Lower  (e.g. 0.60) → more questions use stored answers (faster, less flexible)
+
+
+================================================================================
+THE retrieve() FUNCTION — STEP BY STEP
+================================================================================
+
+    def retrieve(query):
+
+    Step 1: Search the QA store for the 1 best matching question
+            qa_results = search_qa_store(query, top_k=1)
+            best_score = qa_results[0][1]   ← the similarity score
+
+    Step 2: Is the score good enough?
+
+            if best_score >= 0.75:
+                ┌─────────────────────────────────────────┐
+                │  return {                               │
+                │    mode: "qa_match",                    │
+                │    answer: stored answer text,          │
+                │    source: URL of the pandas page,      │
+                │    matched_question: the Q that matched,│
+                │    confidence: 0.89,                    │
+                │  }                                      │
+                └─────────────────────────────────────────┘
+                (chatbot uses this answer directly)
+
+            else:
+                context_docs = search_doc_store(query, top_k=5)
+                ┌─────────────────────────────────────────┐
+                │  return {                               │
+                │    mode: "doc_search",                  │
+                │    answer: None,                        │
+                │    context_docs: [5 text chunks],       │
+                │    confidence: 0.61,                    │
+                │  }                                      │
+                └─────────────────────────────────────────┘
+                (chatbot sends chunks to Ollama for answer generation)
+
+
+================================================================================
+FLOW DIAGRAM
+================================================================================
+
+    User question: "How do I merge DataFrames?"
+              │
+              ▼
+    ┌─────────────────────────────────────────────────────┐
+    │               HybridRetriever.retrieve()            │
+    │                                                     │
+    │  1. search_qa_store(query, top_k=1)                 │
+    │     → ChromaDB finds closest Q&A vector             │
+    │     → returns (Document, score)                     │
+    │                                                     │
+    │  2. score >= 0.75?                                  │
+    │      YES ──────────────────────────────────────────►│ return stored answer
+    │       NO                                            │
+    │        │                                            │
+    │  3. search_doc_store(query, top_k=5)                │
+    │     → ChromaDB finds 5 closest doc chunks          │
+    │     → returns [Document, Document, ...]             │
+    │                                          ──────────►│ return doc chunks
+    └─────────────────────────────────────────────────────┘
+              │                        │
+              ▼                        ▼
+    chatbot returns              chatbot sends to
+    answer directly              Ollama for generation
+
+
+================================================================================
+KEY CONFIGURATION VALUES  (from config.py)
+================================================================================
+
+    HYBRID_THRESHOLD = 0.75    Minimum score to use a stored Q&A answer
+    TOP_K_DOCS       = 5       Number of doc chunks returned in fallback mode
+
+
+================================================================================
+
+================================================================================
+       HOW scraper.py WORKS — DETAILED EXPLANATION
+================================================================================
+
+
+OVERVIEW
+--------
+scraper.py is the FIRST step in the whole pipeline. Before the chatbot can
+answer questions, and before qa_generator.py can create Q&A pairs, someone
+needs to actually GET the pandas documentation from the internet.
+
+That is what scraper.py does: it visits pandas.pydata.org, downloads the
+HTML pages, cleans out all the navigation/buttons/menus, and saves the pure
+text content to files in data/raw/.
+
+    scraper.py  →  data/raw/*.txt  →  qa_generator.py  →  qa_dataset.csv  →  chatbot
+
+
+================================================================================
+STEP 1 — THE TARGET URLS  (from config.py)
+================================================================================
+
+The script has a list of 23 pandas documentation pages to scrape,
+defined in config.py as SCRAPE_TARGETS:
+
+    SCRAPE_TARGETS = [
+        "https://pandas.pydata.org/docs/user_guide/10min.html",
+        "https://pandas.pydata.org/docs/user_guide/dsintro.html",
+        "https://pandas.pydata.org/docs/user_guide/basics.html",
+        "https://pandas.pydata.org/docs/user_guide/io.html",
+        ... (23 pages total)
+    ]
+
+
+================================================================================
+STEP 2 — FETCHING THE PAGE  (function: fetch_page)
+================================================================================
+
+For each URL, the script sends an HTTP request — like a browser visiting
+a website, but automated.
+
+    ┌─────────────────────────────────────────────────────┐
+    │  Python Script                  pandas.pydata.org   │
+    │                                                     │
+    │  requests.get(url)  ──────────────────────────────► │
+    │                     ◄────────────────────────────── │
+    │                       returns raw HTML              │
+    └─────────────────────────────────────────────────────┘
+
+The script identifies itself politely with a User-Agent header:
+    "Mozilla/5.0 (compatible; educational-research-bot/1.0; RAG chatbot assignment)"
+
+This tells the server it is a legitimate educational bot, not a malicious crawler.
+
+If the request fails (network error, 404, etc.) → the URL is skipped
+and added to a "failed" list at the end.
+
+
+================================================================================
+STEP 3 — CLEANING THE HTML  (function: clean_html)
+================================================================================
+
+A real webpage contains a LOT of things we don't want:
+navigation menus, sidebars, search boxes, footers, JavaScript, CSS...
+
+The clean_html() function removes all of that:
+
+    RAW HTML PAGE
+    ┌─────────────────────────────────────┐
+    │  [navigation menu]                  │  ← removed
+    │  [sidebar with links]               │  ← removed
+    │  [search box]                       │  ← removed
+    │                                     │
+    │  ACTUAL CONTENT                     │  ← KEPT
+    │  (the real pandas documentation)    │
+    │                                     │
+    │  [footer]                           │  ← removed
+    │  [JavaScript code]                  │  ← removed
+    └─────────────────────────────────────┘
+
+Removed HTML tags:
+    nav, footer, script, style, .headerlink, .toctree-wrapper,
+    #searchbox, .sphinxsidebar, .bd-sidebar, .bd-toc, .prev-next-area
+
+Then it finds the main content area using CSS selectors (in order of priority):
+    1. div.bd-content         (PyData Sphinx theme)
+    2. article.bd-article
+    3. div#main-content
+    4. div.body
+    5. <main> tag
+    6. <body> as fallback
+
+The raw text is extracted and excessive blank lines are collapsed,
+so the output is clean and readable.
+
+
+================================================================================
+STEP 4 — SAVING THE FILE  (function: save_page)
+================================================================================
+
+The cleaned text is saved as a .txt file in data/raw/.
+
+The URL is converted to a filename using url_to_slug():
+
+    https://pandas.pydata.org/docs/user_guide/10min.html
+                        ↓  url_to_slug()
+    docs__user_guide__10min.html.txt
+
+    (slashes / become double underscores __)
+
+Each saved file looks like this:
+
+    ┌─────────────────────────────────────────────────────┐
+    │ URL: https://pandas.pydata.org/.../10min.html       │  ← metadata header
+    │ TITLE: 10 minutes to pandas                         │
+    │ SCRAPED_AT: 2026-05-22T10:30:00                     │
+    │ ────────────────────────────────────────────────    │
+    │                                                     │
+    │  10 minutes to pandas                               │  ← actual content
+    │                                                     │
+    │  This is a short introduction to pandas...          │
+    │  ...                                                │
+    └─────────────────────────────────────────────────────┘
+
+
+================================================================================
+STEP 5 — RATE LIMITING  (SCRAPE_DELAY)
+================================================================================
+
+After downloading each page, the script WAITS 2 seconds before the next one.
+
+    config.py:  SCRAPE_DELAY = 2  # seconds
+
+This is called "rate limiting" — it is polite behavior that:
+    - Avoids overwhelming the pandas server with too many requests
+    - Prevents the script from being blocked as a bot
+    - Is standard practice for ethical web scraping
+
+    Page 1 download → wait 2s → Page 2 download → wait 2s → ...
+
+
+================================================================================
+COMPLETE FLOW DIAGRAM
+================================================================================
+
+    ┌──────────────────┐
+    │   config.py      │   23 URLs in SCRAPE_TARGETS
+    │   SCRAPE_TARGETS │
+    └────────┬─────────┘
+             │
+             ▼
+    ┌─────────────────────────────────────────────────┐
+    │  for each URL:                                  │
+    │                                                 │
+    │  1. fetch_page(url)                             │
+    │     → HTTP GET request to pandas.pydata.org     │
+    │     → receive raw HTML                          │
+    │                                                 │
+    │  2. clean_html(soup, url)                       │
+    │     → remove nav/footer/scripts/sidebar         │
+    │     → extract main content text                 │
+    │     → extract page title                        │
+    │                                                 │
+    │  3. save_page(page_data, out_dir)               │
+    │     → convert URL to filename slug              │
+    │     → write header + content to .txt file       │
+    │                                                 │
+    │  4. time.sleep(2)   ← wait before next page    │
+    └─────────────────────────────────────────────────┘
+             │
+             ▼
+    ┌──────────────────┐
+    │   data/raw/      │   23 clean .txt files, ready for qa_generator.py
+    │   *.html.txt     │
+    └──────────────────┘
+
+
+================================================================================
+WHERE DOES scraper.py FIT IN THE FULL PIPELINE?
+================================================================================
+
+    ┌────────────┐     ┌──────────────────┐     ┌──────────────────┐
+    │            │     │                  │     │                  │
+    │ scraper.py │────►│ qa_generator.py  │────►│   chatbot.py     │
+    │            │     │                  │     │                  │
+    └────────────┘     └──────────────────┘     └──────────────────┘
+         │                      │                        │
+         ▼                      ▼                        ▼
+    data/raw/            data/qa_dataset.csv      answers user
+    23 .txt files        ~2,500 Q&A pairs         questions
+
+
+scraper.py only needs to be run ONCE (or when the documentation changes).
+The raw .txt files are already in data/raw/ — so you do NOT need to run
+scraper.py again unless you want to add new documentation pages.
+
+================================================================================
+
+
+================================================================================
+       HOW vector_store.py WORKS — DETAILED EXPLANATION
+================================================================================
+
+
+OVERVIEW
+--------
+vector_store.py is the THIRD setup step. After scraper.py has downloaded
+the documentation and qa_generator.py has created the Q&A pairs, this script
+converts ALL of that text into numbers (vectors/embeddings) and stores them
+in a database (ChromaDB) so the chatbot can search through them instantly.
+
+Think of it as building the chatbot's "search index" — like the index at
+the back of a book, but mathematical and instant.
+
+    scraper.py → data/raw/     qa_generator.py → qa_dataset.csv
+                      │                                │
+                      └──────────┬────────────────────┘
+                                 ▼
+                          vector_store.py
+                                 │
+                       ┌─────────┴──────────┐
+                       ▼                    ▼
+                 chroma_db/docs/      chroma_db/qa/
+                 (doc chunks)         (Q&A pairs)
+
+
+================================================================================
+WHAT IS AN EMBEDDING / VECTOR?
+================================================================================
+
+A computer cannot directly compare two sentences for meaning.
+Embeddings solve this by converting text into a list of numbers:
+
+    "How do I merge DataFrames?"  →  [0.12, -0.45, 0.78, 0.03, ...]
+    "How to combine two tables?"  →  [0.11, -0.43, 0.76, 0.05, ...]
+    "What is the weather today?"  →  [0.88,  0.21, -0.34, 0.67, ...]
+
+The first two sentences have SIMILAR numbers → they mean the same thing.
+The third sentence has DIFFERENT numbers → it's unrelated.
+
+This is what makes semantic search work: find the most similar vectors.
+
+    Embedding model used:  all-MiniLM-L6-v2  (from HuggingFace)
+    Runs on: CPU (no GPU needed)
+    Each text → 384 numbers (dimensions)
+
+
+================================================================================
+THE TWO DATABASES BUILT
+================================================================================
+
+vector_store.py creates TWO separate ChromaDB databases:
+
+    ┌──────────────────────────────────────────────────────────────┐
+    │  DATABASE 1 — Doc Store  (chroma_db/docs/)                   │
+    │                                                              │
+    │  Source:  data/raw/*.txt (23 documentation pages)            │
+    │  Content: documentation text split into 500-char chunks      │
+    │  Used by: retriever.py Strategy 2 (fallback doc search)      │
+    │  Purpose: find relevant documentation passages for a query   │
+    └──────────────────────────────────────────────────────────────┘
+
+    ┌──────────────────────────────────────────────────────────────┐
+    │  DATABASE 2 — QA Store  (chroma_db/qa/)                      │
+    │                                                              │
+    │  Source:  data/qa_dataset.csv (~2,500 Q&A pairs)             │
+    │  Content: questions only (answers stored as metadata)        │
+    │  Used by: retriever.py Strategy 1 (fast QA match)            │
+    │  Purpose: find a pre-generated answer for a similar question │
+    └──────────────────────────────────────────────────────────────┘
+
+Important: in the QA store, only the QUESTION is embedded as a vector.
+The ANSWER is stored as metadata alongside it. This way:
+    - Search is done by comparing question → question
+    - When a match is found, the stored answer is returned directly
+
+
+================================================================================
+STEP 1 — LOADING THE EMBEDDING MODEL  (function: get_embedder)
+================================================================================
+
+    embedder = HuggingFaceEmbeddings(
+        model_name = "all-MiniLM-L6-v2",
+        device     = "cpu",
+        normalize  = True,
+    )
+
+    - The model is downloaded from HuggingFace once, then cached locally
+    - @functools.lru_cache(maxsize=1) → the model is only loaded ONCE,
+      even though both build_doc_store() and build_qa_store() need it
+    - "normalize=True" means all vectors have the same length (magnitude),
+      which makes cosine similarity scores consistent between 0.0 and 1.0
+
+
+================================================================================
+STEP 2 — BUILDING THE DOC STORE  (function: build_doc_store)
+================================================================================
+
+    Sub-step 2a: load_raw_pages()
+    ─────────────────────────────
+    Reads all .txt files from data/raw/
+    Extracts: URL, title, and content from each file's header.
+
+    Same format as qa_generator.py reads:
+        URL: https://...
+        TITLE: ...
+        ──────────────────────
+        (content)
+
+
+    Sub-step 2b: chunk_documents()
+    ───────────────────────────────
+    Splits each page's content into overlapping chunks using
+    LangChain's RecursiveCharacterTextSplitter:
+
+        CHUNK_SIZE    = 500 characters  (from config.py)
+        CHUNK_OVERLAP = 50 characters   (from config.py)
+
+    Note: qa_generator.py uses chunks of 3000 chars (for AI generation).
+    vector_store.py uses chunks of 500 chars (for precise search).
+    Smaller chunks = more precise retrieval.
+
+    Overlap means the last 50 characters of chunk N are repeated
+    at the start of chunk N+1 — this prevents cutting off a sentence
+    in the middle and losing context.
+
+        ┌──────────────────────────────────────┐
+        │          page content                │
+        └─────┬────────────────────────────────┘
+              │  RecursiveCharacterTextSplitter
+              ▼
+        ┌─────────┐
+        │ Chunk 1 │  500 chars
+        └──┬──────┘
+           │ (50 chars overlap)
+        ┌──┴──────┐
+        │ Chunk 2 │  500 chars
+        └──┬──────┘
+           │ (50 chars overlap)
+        ┌──┴──────┐
+        │ Chunk 3 │  500 chars
+        └─────────┘
+
+    Each chunk is wrapped in a LangChain Document object:
+        Document(
+            page_content = "the chunk text",
+            metadata     = { source: "https://...", title: "..." }
+        )
+
+
+    Sub-step 2c: Chroma.from_documents()
+    ──────────────────────────────────────
+    All chunks are fed to the embedder and stored in ChromaDB:
+
+        for each chunk:
+            1. embedder.embed(chunk.page_content)  → 384 numbers
+            2. store in ChromaDB with metadata
+
+        Result: ~1,500 chunks indexed in chroma_db/docs/
+
+
+================================================================================
+STEP 3 — BUILDING THE QA STORE  (function: build_qa_store)
+================================================================================
+
+    Sub-step 3a: Read qa_dataset.csv
+    ─────────────────────────────────
+    Loads the CSV file created by qa_generator.py:
+
+        question          | answer                | source_page
+        ──────────────────┼───────────────────────┼────────────────
+        What is head()?   │ Returns first 5 rows  │ https://...
+        How to merge?     │ Use pd.merge()...     │ https://...
+        ...               │ ...                   │ ...
+
+    Validates that all required columns are present.
+
+
+    Sub-step 3b: Create Documents (question only)
+    ───────────────────────────────────────────────
+    For each row:
+        Document(
+            page_content = question text,       ← embedded as vector
+            metadata     = {
+                answer: "...",                  ← stored, NOT embedded
+                source: "https://..."
+            }
+        )
+
+    Only the question is embedded because we search by question similarity.
+    The answer is just metadata that gets returned when a match is found.
+
+
+    Sub-step 3c: Chroma.from_documents()
+    ──────────────────────────────────────
+    All Q&A pairs are embedded and stored in ChromaDB:
+
+        for each Q&A pair:
+            1. embedder.embed(question)  → 384 numbers
+            2. store in ChromaDB with answer+source as metadata
+
+        Result: ~2,500 Q&A vectors indexed in chroma_db/qa/
+
+
+================================================================================
+STEP 4 — LOADING THE STORES AT RUNTIME  (functions: load_doc_store, load_qa_store)
+================================================================================
+
+These functions are used by retriever.py when the chatbot starts up.
+They do NOT rebuild anything — they just open the existing ChromaDB databases.
+
+    load_doc_store()  →  opens  chroma_db/docs/
+    load_qa_store()   →  opens  chroma_db/qa/
+
+    HybridRetriever.__init__() calls both of these:
+        self.doc_store = load_doc_store()
+        self.qa_store  = load_qa_store()
+
+    Once loaded, ChromaDB keeps the vectors in memory for instant search.
+
+
+================================================================================
+COMPLETE FLOW DIAGRAM
+================================================================================
+
+    ┌──────────────┐    ┌────────────────────┐
+    │ data/raw/    │    │ data/qa_dataset.csv │
+    │ 23 .txt files│    │ ~2,500 Q&A pairs    │
+    └──────┬───────┘    └─────────┬──────────┘
+           │                      │
+           ▼                      ▼
+    load_raw_pages()        pd.read_csv()
+           │                      │
+           ▼                      ▼
+    chunk_documents()       create Documents
+    (500 char chunks,        (question as text,
+     50 char overlap)        answer as metadata)
+           │                      │
+           ▼                      ▼
+    ┌──────────────────────────────────────────────────┐
+    │           get_embedder()                         │
+    │   HuggingFaceEmbeddings("all-MiniLM-L6-v2")     │
+    │   Converts text → 384-dimensional vectors        │
+    └──────────┬───────────────────────────┬───────────┘
+               ▼                           ▼
+    ┌──────────────────┐         ┌──────────────────┐
+    │  Chroma.from_    │         │  Chroma.from_    │
+    │  documents()     │         │  documents()     │
+    │                  │         │                  │
+    │  chroma_db/docs/ │         │  chroma_db/qa/   │
+    │  ~1,500 chunks   │         │  ~2,500 Q&A      │
+    │  indexed         │         │  pairs indexed   │
+    └──────────────────┘         └──────────────────┘
+               │                           │
+               └──────────────┬────────────┘
+                              ▼
+                   retriever.py loads both
+                   at chatbot startup and
+                   uses them for search
+
+
+================================================================================
+KEY CONFIGURATION VALUES  (from config.py)
+================================================================================
+
+    EMBEDDING_MODEL   = "all-MiniLM-L6-v2"    HuggingFace model for embeddings
+    CHUNK_SIZE        = 500                    Max characters per doc chunk
+    CHUNK_OVERLAP     = 50                     Overlap between chunks
+    CHROMA_PERSIST_DIR= "chroma_db"            Root folder for databases
+    DOC_COLLECTION_NAME = "pandas_docs"        Name of doc store collection
+    QA_COLLECTION_NAME  = "pandas_qa"          Name of QA store collection
+
+
+================================================================================
+HOW LONG DOES IT TAKE?
+================================================================================
+
+    Loading embedding model:  ~30 seconds  (first time; cached after)
+    Chunking 23 pages:        ~1 second
+    Embedding ~1,500 chunks:  ~1-2 minutes  (CPU only)
+    Embedding ~2,500 Q&A:     ~1-2 minutes  (CPU only)
+    Total:                    ~2-5 minutes
+
+No internet connection needed. Everything runs locally.
+
+
+================================================================================
+WHERE DOES vector_store.py FIT IN THE FULL PIPELINE?
+================================================================================
+
+    ┌────────────┐     ┌──────────────────┐     ┌──────────────────┐
+    │            │     │                  │     │                  │
+    │ scraper.py │────►│ qa_generator.py  │────►│ vector_store.py  │
+    │            │     │                  │     │                  │
+    └────────────┘     └──────────────────┘     └────────┬─────────┘
+         │                      │                        │
+         ▼                      ▼                        ▼
+    data/raw/            qa_dataset.csv           chroma_db/
+    23 .txt files        ~2,500 Q&A pairs         docs/ + qa/
+                                                  (vector databases)
+                                                        │
+                                                        ▼
+                                                  retriever.py
+                                                  loads and searches
+                                                  at runtime
+
+vector_store.py only needs to be run ONCE — or again after re-running
+scraper.py or qa_generator.py (because the source data changed).
+
+================================================================================

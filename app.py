@@ -83,7 +83,7 @@ with st.sidebar:
 2. Falls back to full doc search if score < 0.75
 
 **Models:**
-- LLM: Groq llama3-8b-8192
+- LLM: Groq llama-3.1-8b-instant
 - Embeddings: all-MiniLM-L6-v2
 
 **Vector DB:** Chroma (2 collections)
@@ -99,7 +99,7 @@ with st.sidebar:
 
 # ── Main area ─────────────────────────────────────────────────────────────────
 st.title("🐼 Ask me anything about pandas")
-st.caption("Powered by RAG · Hybrid Q&A + Document Retrieval · Groq llama3-8b-8192")
+st.caption("Powered by RAG · Hybrid Q&A + Document Retrieval · Groq llama-3.1-8b-instant")
 
 # Welcome message
 if not st.session_state.messages:

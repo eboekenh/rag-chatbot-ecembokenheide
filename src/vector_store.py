@@ -28,6 +28,7 @@ import sys
 import functools
 
 import pandas as pd
+from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
@@ -190,12 +191,19 @@ def build_doc_store(raw_dir: str | None = None, persist_dir: str | None = None) 
     embedder = get_embedder()
 
     logger.info(f"Building doc store → {persist_dir}")
-    store = Chroma.from_documents(
-        documents=docs,
-        embedding=embedder,
-        collection_name=DOC_COLLECTION_NAME,
-        persist_directory=persist_dir,
-    )
+    _BATCH = 500
+    store = None
+    for i in tqdm(range(0, len(docs), _BATCH), desc="Embedding doc chunks", unit="batch"):
+        batch = docs[i : i + _BATCH]
+        if store is None:
+            store = Chroma.from_documents(
+                documents=batch,
+                embedding=embedder,
+                collection_name=DOC_COLLECTION_NAME,
+                persist_directory=persist_dir,
+            )
+        else:
+            store.add_documents(batch)
     logger.info(f"Doc store ready: {len(docs)} chunks indexed")
     return store
 
@@ -256,12 +264,19 @@ def build_qa_store(qa_csv: str | None = None, persist_dir: str | None = None) ->
     embedder = get_embedder()
 
     logger.info(f"Building Q&A store → {persist_dir} ({len(docs)} pairs)")
-    store = Chroma.from_documents(
-        documents=docs,
-        embedding=embedder,
-        collection_name=QA_COLLECTION_NAME,
-        persist_directory=persist_dir,
-    )
+    _BATCH = 500
+    store = None
+    for i in tqdm(range(0, len(docs), _BATCH), desc="Embedding Q&A pairs", unit="batch"):
+        batch = docs[i : i + _BATCH]
+        if store is None:
+            store = Chroma.from_documents(
+                documents=batch,
+                embedding=embedder,
+                collection_name=QA_COLLECTION_NAME,
+                persist_directory=persist_dir,
+            )
+        else:
+            store.add_documents(batch)
     logger.info(f"Q&A store ready: {len(docs)} pairs indexed")
     return store
 
