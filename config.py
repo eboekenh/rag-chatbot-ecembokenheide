@@ -9,7 +9,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # --- Paths ---
 RAW_DATA_DIR = "data/raw"
 PROCESSED_DATA_DIR = "data/processed"
-QA_DATASET_PATH = "data/qa_dataset.csv"
+QA_DATASET_PATH = "data/processed/qa_dataset.csv"
 CHROMA_PERSIST_DIR = "chroma_db"
 
 # --- Chroma Collections ---

@@ -1,0 +1,21 @@
+You will receive a CSV file with pandas API functions.
+Columns: section, subsection, function_name, parameters, description, source_url
+
+Clean the data by applying the following rules and report what was removed at the end:
+
+REMOVE rows where:
+1. description is empty or shorter than 30 characters
+2. function_name starts with _ (private/internal function)
+3. description contains "Deprecated" or "alias for"
+4. function_name is a duplicate — keep only the first occurrence
+5. description is identical to function_name (no real description present)
+
+KEEP all other rows.
+
+Output:
+1. The cleaned CSV (same columns)
+2. A summary at the end:
+   - Rule 1: X rows removed (examples: ...)
+   - Rule 2: X rows removed (examples: ...)
+   - etc.
+   - Total: X of Y rows kept

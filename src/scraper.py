@@ -26,6 +26,7 @@ def url_to_slug(url: str) -> str:
     path = urlparse(url).path
     slug = path.strip("/").replace("/", "__")
     slug = re.sub(r"[^a-zA-Z0-9_\-\.]", "_", slug)
+    slug = re.sub(r"\.[a-z]+$", "", slug)  # remove URL extension (e.g. .html)
     return slug
 
 
@@ -39,6 +40,17 @@ def fetch_page(url: str) -> BeautifulSoup | None:
     except requests.exceptions.RequestException as e:
         print(f"  [SKIP] Request failed – {url}: {e}")
     return None
+
+
+def _table_to_text(table_tag) -> str:
+    """Convert an HTML table to a pipe-separated text representation."""
+    lines = []
+    for row in table_tag.find_all("tr"):
+        cells = row.find_all(["th", "td"])
+        cell_texts = [c.get_text(separator=" ", strip=True) for c in cells]
+        if any(cell_texts):
+            lines.append(" | ".join(cell_texts))
+    return "\n".join(lines)
 
 
 def clean_html(soup: BeautifulSoup, url: str) -> dict:
@@ -62,6 +74,43 @@ def clean_html(soup: BeautifulSoup, url: str) -> dict:
 
     title_tag = soup.find("h1")
     title = title_tag.get_text(strip=True) if title_tag else urlparse(url).path
+
+    # Step 1: Unwrap inline formatting so text flows naturally with surroundings
+    for tag in content_div.find_all(["em", "strong", "a", "b", "i", "u",
+                                      "small", "abbr", "cite", "span"]):
+        tag.unwrap()
+    # Unwrap inline <code> that are NOT inside a <pre> block
+    for tag in content_div.find_all("code"):
+        if not tag.find_parent("pre"):
+            tag.unwrap()
+
+    # Step 2: Convert <pre> code blocks to single readable lines
+    for pre in content_div.find_all("pre"):
+        code_text = re.sub(r"\s+", " ", pre.get_text(separator="", strip=False)).strip()
+        if code_text:  # skip empty <pre> blocks (e.g. image placeholders)
+            pre.replace_with(f"\nCode: {code_text}\n")
+        else:
+            pre.decompose()
+
+    # Step 3: Convert tables to pipe-separated readable text
+    for table in content_div.find_all("table"):
+        table.replace_with(f"\n{_table_to_text(table)}\n")
+
+    # Step 4: Collapse each block element to a single line.
+    # h2-h6 get a '## ' prefix so chunk_for_qa can split at section boundaries.
+    # <dt> uses separator=" " so param name and type don't merge (e.g. "sep str" not "sepstr").
+    for tag in content_div.find_all(["h2", "h3", "h4", "h5", "h6"]):
+        text = re.sub(r"\s+", " ", tag.get_text(separator="", strip=False)).strip()
+        if text:
+            tag.replace_with(f"\n## {text}\n")
+    for tag in content_div.find_all(["p", "h1", "li", "dd"]):
+        text = re.sub(r"\s+", " ", tag.get_text(separator="", strip=False)).strip()
+        if text:
+            tag.replace_with(f"\n{text}\n")
+    for tag in content_div.find_all("dt"):
+        text = re.sub(r"\s+", " ", tag.get_text(separator=" ", strip=False)).strip()
+        if text:
+            tag.replace_with(f"\n{text}\n")
 
     raw_text = content_div.get_text(separator="\n", strip=True)
 
