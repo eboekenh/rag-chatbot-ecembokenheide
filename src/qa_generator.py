@@ -1,19 +1,19 @@
 import os
 import sys
 import json
-import time
 import re
+import time
 
 import pandas as pd
-from tqdm import tqdm
 from groq import Groq
+from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
-    GROQ_API_KEY,
     RAW_DATA_DIR,
     QA_DATASET_PATH,
-    LLM_MODEL,
+    GROQ_API_KEY,
+    GROQ_QA_MODEL,
 )
 
 QA_PROMPT = """You are a Q&A dataset generator for a RAG chatbot about the pandas library.
@@ -23,13 +23,13 @@ Given the text below, generate exactly {n} question-answer pairs that test real 
 - Answers must be concise but complete (2-4 sentences)
 - Cover different aspects of the text (don't repeat similar questions)
 
-Return ONLY a valid JSON array. No explanations, no markdown, no preamble.
+Return ONLY a valid JSON object with a "pairs" key containing an array. No explanations, no markdown, no preamble.
 
 Format:
-[
+{{"pairs": [
   {{"question": "...", "answer": "..."}},
   ...
-]
+]}}
 
 TEXT:
 {chunk}"""
@@ -102,19 +102,18 @@ def chunk_for_qa(content: str, max_chars: int = 3000) -> list[str]:
 def generate_qa_for_chunk(
     chunk: str,
     source_url: str,
-    client: Groq,
     n_pairs: int = 8,
     max_retries: int = 2,
 ) -> list[dict]:
+    client = Groq(api_key=GROQ_API_KEY)
     prompt = QA_PROMPT.format(n=n_pairs, chunk=chunk)
 
     for attempt in range(max_retries + 1):
         try:
             response = client.chat.completions.create(
-                model=LLM_MODEL,
+                model=GROQ_QA_MODEL,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.4,
-                max_tokens=2048,
             )
             raw = response.choices[0].message.content.strip()
 
@@ -122,9 +121,18 @@ def generate_qa_for_chunk(
             raw = re.sub(r"^```(?:json)?\s*", "", raw)
             raw = re.sub(r"\s*```$", "", raw)
 
-            pairs = json.loads(raw)
+            # Extract first JSON object if extra text is present
+            match = re.search(r'\{.*\}', raw, re.DOTALL)
+            if match:
+                raw = match.group(0)
+
+            # Fix common JSON issues: unescaped single quotes inside strings
+            raw = raw.replace("\\'", "'")
+
+            parsed = json.loads(raw)
+            pairs = parsed.get("pairs", parsed) if isinstance(parsed, dict) else parsed
             if not isinstance(pairs, list):
-                raise ValueError("Response is not a JSON array")
+                raise ValueError("Response does not contain a pairs array")
 
             valid = []
             for p in pairs:
@@ -139,10 +147,18 @@ def generate_qa_for_chunk(
         except (json.JSONDecodeError, ValueError) as e:
             if attempt < max_retries:
                 print(f"  [RETRY {attempt + 1}] JSON parse error: {e}")
-                time.sleep(2)
             else:
                 print(f"  [SKIP] Failed after {max_retries + 1} attempts: {e}")
-
+                return []
+        except Exception as e:
+            error_str = str(e)
+            if "rate_limit" in error_str.lower() or "429" in error_str:
+                wait = 60
+                print(f"  [RATE LIMIT] Waiting {wait}s...")
+                time.sleep(wait)
+            else:
+                print(f"  [ERROR] Groq request failed: {e}")
+                return []
     return []
 
 
@@ -164,41 +180,54 @@ def run_qa_generator(raw_dir: str = None, out_path: str = None) -> None:
         out_path = QA_DATASET_PATH
 
     if not GROQ_API_KEY:
-        raise EnvironmentError("GROQ_API_KEY not set. Create a .env file with your key.")
+        raise EnvironmentError("GROQ_API_KEY not set. Add it to your .env file.")
 
-    client = Groq(api_key=GROQ_API_KEY)
     pages = load_raw_pages(raw_dir)
 
     if not pages:
         raise FileNotFoundError(f"No .txt files found in {raw_dir}. Run scraper.py first.")
 
-    all_pairs = []
+    # Resume: find which pages are already done
+    already_done: set[str] = set()
+    os.makedirs(os.path.dirname(out_path) if os.path.dirname(out_path) else ".", exist_ok=True)
+    if os.path.exists(out_path):
+        try:
+            existing_df = pd.read_csv(out_path)
+            already_done = set(existing_df["source_page"].dropna().unique())
+            print(f"Resuming: {len(already_done)} page(s) already processed, skipping them.")
+        except Exception:
+            pass
 
-    for page in tqdm(pages, desc="Generating Q&A"):
-        chunks = chunk_for_qa(page["content"], max_chars=3000)
+    remaining = [p for p in pages if p["url"] not in already_done]
+    print(f"Pages to process: {len(remaining)} / {len(pages)}")
+
+    for page in tqdm(remaining, desc="Generating Q&A"):
+        chunks = chunk_for_qa(page["content"], max_chars=1500)
         page_pairs = []
 
-        for chunk in chunks:
+        for chunk in tqdm(chunks, desc=f"  Chunks [{page['title'][:30]}]", leave=False):
             pairs = generate_qa_for_chunk(
                 chunk=chunk,
                 source_url=page["url"],
-                client=client,
-                n_pairs=8,
+                n_pairs=5,
             )
             page_pairs.extend(pairs)
-            # Respect Groq rate limits
-            time.sleep(1.5)
 
         print(f"  {page['title']}: {len(chunks)} chunks → {len(page_pairs)} pairs")
-        all_pairs.extend(page_pairs)
 
-    all_pairs = deduplicate(all_pairs)
-    print(f"\nTotal Q&A pairs after deduplication: {len(all_pairs)}")
+        if page_pairs:
+            page_df = pd.DataFrame(page_pairs, columns=["question", "answer", "source_page"])
+            write_header = not os.path.exists(out_path) or os.path.getsize(out_path) == 0
+            page_df.to_csv(out_path, mode="a", index=False, header=write_header)
+            print(f"  Saved {len(page_pairs)} pairs for '{page['title']}' → {out_path}")
 
-    os.makedirs(os.path.dirname(out_path) if os.path.dirname(out_path) else ".", exist_ok=True)
-    df = pd.DataFrame(all_pairs, columns=["question", "answer", "source_page"])
-    df.to_csv(out_path, index=False)
-    print(f"Saved {len(df)} pairs to {out_path}")
+    # Final deduplication pass
+    if os.path.exists(out_path):
+        final_df = pd.read_csv(out_path)
+        before = len(final_df)
+        final_df = final_df.drop_duplicates(subset=["question"])
+        final_df.to_csv(out_path, index=False)
+        print(f"\nDone. {len(final_df)} unique pairs total (removed {before - len(final_df)} duplicates).")
 
 
 if __name__ == "__main__":

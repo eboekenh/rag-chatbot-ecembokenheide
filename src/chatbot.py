@@ -4,7 +4,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
     GROQ_API_KEY,
-    LLM_MODEL,
+    GROQ_QA_MODEL,
     LLM_TEMPERATURE,
     MAX_HISTORY_TURNS,
     QA_DATASET_PATH,
@@ -23,13 +23,10 @@ Always cite the source page at the end of your answer as: Source: <url>"""
 
 class RAGChatbot:
     def __init__(self):
-        if not GROQ_API_KEY:
-            raise EnvironmentError("GROQ_API_KEY not set. Create a .env file with your key.")
-
         self.retriever = HybridRetriever()
         self.llm = ChatGroq(
             api_key=GROQ_API_KEY,
-            model=LLM_MODEL,
+            model=GROQ_QA_MODEL,
             temperature=LLM_TEMPERATURE,
         )
         self.memory: list[dict] = []

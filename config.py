@@ -27,8 +27,10 @@ CHUNK_OVERLAP = 50
 HYBRID_THRESHOLD = 0.75
 TOP_K_DOCS = 5
 
-# --- LLM ---
-LLM_MODEL = "llama3-8b-8192"
+# --- Groq (used by qa_generator) ---
+GROQ_QA_MODEL = "llama-3.1-8b-instant"
+
+# --- LLM (Groq, used by chatbot) ---
 LLM_TEMPERATURE = 0.3
 
 # --- Chat Memory ---
