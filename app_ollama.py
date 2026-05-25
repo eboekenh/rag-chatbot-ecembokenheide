@@ -34,6 +34,8 @@ from config import (
     MAX_HISTORY_TURNS,
     HYBRID_THRESHOLD,
 )
+
+DOC_SEARCH_MIN_CONFIDENCE = 0.45
 from src.retriever import HybridRetriever
 from langchain_core.documents import Document
 
@@ -55,11 +57,10 @@ _SYSTEM_PROMPT = """You are a helpful pandas expert assistant. Use the provided 
 
 Rules:
 1. Always give a clear, detailed explanation — not just a one-liner.
-2. Always include at least one practical Python/pandas code example using a code block.
-3. If the concept has multiple use cases, show 2-3 short examples.
-4. Use simple language so beginners can understand.
-5. If the context does not contain enough information, say: "I don't have enough information about that in the pandas documentation."
-6. End your answer with: Source: <url>"""
+2. Only include code examples if the context explicitly contains them. Never invent code output — only show output values that appear verbatim in the context.
+3. Use simple language so beginners can understand.
+4. If the context does not contain enough information, say: "I don't have enough information about that in the pandas documentation."
+5. End your answer with: Source: <url>"""
 
 
 # ── Cached resource loaders ───────────────────────────────────────────────────
@@ -138,7 +139,7 @@ def _prepare_chat(query: str, retriever: HybridRetriever, memory: list) -> tuple
     else:
         context_docs = retrieval["context_docs"]
         matched_question = None
-        if not context_docs:
+        if not context_docs or confidence < DOC_SEARCH_MIN_CONFIDENCE:
             messages = None
             sources = []
         else:
@@ -188,7 +189,7 @@ def chat(query: str, retriever: HybridRetriever, llm, memory: list) -> dict:
     else:
         context_docs = retrieval["context_docs"]
         matched_question = None
-        if not context_docs:
+        if not context_docs or confidence < DOC_SEARCH_MIN_CONFIDENCE:
             answer = "I don't have enough information about that in the pandas documentation."
             sources = []
         else:
