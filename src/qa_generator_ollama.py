@@ -1,35 +1,44 @@
+"""QA-Generator variant that uses a local Ollama model instead of Groq.
+
+Usage:
+    python -m src.qa_generator_ollama
+
+Make sure Ollama is running and the model is pulled:
+    ollama serve
+    ollama pull llama3.2:3b
+"""
 import os
 import sys
 import json
 import re
 import time
 
+import requests
 import pandas as pd
-from groq import Groq
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from config import (
     RAW_DATA_DIR,
     QA_DATASET_PATH,
-    GROQ_API_KEY,
-    GROQ_QA_MODEL,
+    OLLAMA_BASE_URL,
+    OLLAMA_QA_MODEL,
 )
 
 WRITE_EVERY = 3  # flush buffer to disk after every N pairs
 
-QA_PROMPT = """You are a Q&A dataset generator for a RAG chatbot about the pandas library.
+QA_PROMPT = """You are building a Q&A dataset for a RAG chatbot that helps coders, data scientists, data analysts, and data engineers use the pandas library effectively. Your goal is to generate question-answer pairs that teach users HOW to use pandas in real data workflows — not just what a function is called.
 
-Given the text below, generate exactly {n} question-answer pairs that test real comprehension.
+Given the pandas documentation below, generate exactly {n} question-answer pairs.
 
 RULES:
-- Questions must be general and standalone — a user must be able to ask them WITHOUT having read the text
+- Questions must be general and standalone — a user must be able to ask them WITHOUT having read the docs
 - NEVER reference "the example", "the code", "in the example code", or example variable names (df, df2, s, s1, result, etc.)
-- Questions must be about pandas concepts or functionality, not about what a specific example demonstrates
-- Answers must be concise but complete (2-4 sentences)
-- Cover different aspects: concepts, how to use features, parameters, behavior
+- Questions must be practical and relevant to data work: purpose, how to use it, key parameters, return value, or common use cases
+- Answers must be explanatory: describe what the concept/feature does, what the result looks like, and include a short code example when relevant
+- If code examples are provided, use them to write a practical usage question (not about what the example variable contains)
 
-Return ONLY a valid JSON object with a "pairs" key containing an array. No explanations, no markdown, no preamble.
+Return ONLY a valid JSON object with a "pairs" key. No explanations, no markdown.
 
 Format:
 {{"pairs": [
@@ -50,7 +59,6 @@ def load_raw_pages(raw_dir: str) -> list[dict]:
         with open(filepath, "r", encoding="utf-8") as f:
             raw = f.read()
 
-        # Parse header metadata
         url = ""
         title = filename
         content_start = 0
@@ -72,14 +80,7 @@ def load_raw_pages(raw_dir: str) -> list[dict]:
 
 
 def chunk_for_qa(content: str, max_chars: int = 3000) -> list[str]:
-    """Split content into chunks that respect section boundaries.
-
-    Sections are delimited by lines starting with '## ' (added by scraper for
-    h2-h6 headings). When a section is too long to fit in one chunk, each
-    continuation chunk gets a '[continued: <heading>]' prefix so the LLM
-    always has context about which section it is reading.
-    """
-    # Split into sections at heading markers
+    """Split content into chunks that respect section boundaries."""
     raw_sections = re.split(r"(?=\n## )", content)
     sections = [s.strip() for s in raw_sections if s.strip()]
 
@@ -87,12 +88,10 @@ def chunk_for_qa(content: str, max_chars: int = 3000) -> list[str]:
     current = ""
 
     for section in sections:
-        # Extract heading line for use as context prefix in continuations
         first_line = section.split("\n")[0].strip()
         heading = first_line[3:] if first_line.startswith("## ") else first_line
 
         if len(section) <= max_chars:
-            # Section fits — try to append to current chunk
             if len(current) + len(section) + 2 <= max_chars:
                 current += ("\n\n" if current else "") + section
             else:
@@ -100,7 +99,6 @@ def chunk_for_qa(content: str, max_chars: int = 3000) -> list[str]:
                     chunks.append(current.strip())
                 current = section
         else:
-            # Section too long — flush current and split by paragraphs
             if current:
                 chunks.append(current.strip())
                 current = ""
@@ -114,7 +112,6 @@ def chunk_for_qa(content: str, max_chars: int = 3000) -> list[str]:
                     if sub:
                         chunks.append(sub.strip())
                     if len(para) > max_chars:
-                        # Single paragraph too long: split by sentence
                         sentences = re.split(r"(?<=[.!?])\s+", para)
                         sub = "" if is_first else f"[continued: {heading}]\n"
                         for sent in sentences:
@@ -125,7 +122,6 @@ def chunk_for_qa(content: str, max_chars: int = 3000) -> list[str]:
                                     chunks.append(sub.strip())
                                 sub = f"[continued: {heading}]\n{sent}"
                     else:
-                        # Start new sub-chunk; add heading context if not first
                         sub = para if is_first else f"[continued: {heading}]\n\n{para}"
                 is_first = False
             if sub:
@@ -140,78 +136,70 @@ def chunk_for_qa(content: str, max_chars: int = 3000) -> list[str]:
 def generate_qa_for_chunk(
     chunk: str,
     source_url: str,
-    client: Groq,
     n_pairs: int = 5,
     max_retries: int = 2,
-    max_rate_limit_retries: int = 4,
 ) -> list[dict]:
-    """Call Groq to generate n_pairs Q&A pairs from chunk.
-
-    JSON parse errors: retried up to max_retries times (fast).
-    Rate limit errors: retried up to max_rate_limit_retries times (65s sleep each).
-    """
+    """Call Ollama to generate n_pairs Q&A pairs from chunk."""
     prompt = QA_PROMPT.format(n=n_pairs, chunk=chunk)
-    rate_limit_attempts = 0
 
-    while rate_limit_attempts <= max_rate_limit_retries:
-        for attempt in range(max_retries + 1):
-            try:
-                response = client.chat.completions.create(
-                    model=GROQ_QA_MODEL,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.4,
-                )
-                raw = response.choices[0].message.content.strip()
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.post(
+                f"{OLLAMA_BASE_URL}/api/chat",
+                json={
+                    "model": OLLAMA_QA_MODEL,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "options": {"temperature": 0.4},
+                },
+                timeout=300,
+            )
+            response.raise_for_status()
+            raw = response.json()["message"]["content"].strip()
 
-                # Strip markdown code fences if present
-                raw = re.sub(r"^```(?:json)?\s*", "", raw)
-                raw = re.sub(r"\s*```$", "", raw)
+            # Strip markdown code fences if present
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
 
-                # Extract first JSON object if extra text is present
-                match = re.search(r'\{.*\}', raw, re.DOTALL)
-                if match:
-                    raw = match.group(0)
+            # Extract first JSON object if extra text is present
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if match:
+                raw = match.group(0)
 
-                # Fix common JSON issues: unescaped single quotes inside strings
-                raw = raw.replace("\\'", "'")
+            # Fix common JSON issues from small models
+            raw = raw.replace("\\'", "'")
+            # Remove trailing commas before ] or }
+            raw = re.sub(r",\s*([}\]])", r"\1", raw)
+            # Replace smart quotes with straight quotes
+            raw = raw.replace("\u201c", '"').replace("\u201d", '"').replace("\u2018", "'").replace("\u2019", "'")
+            # Fix unescaped newlines inside strings
+            raw = re.sub(r'(?<!\\)\n', ' ', raw)
 
-                parsed = json.loads(raw)
-                pairs = parsed.get("pairs", parsed) if isinstance(parsed, dict) else parsed
-                if not isinstance(pairs, list):
-                    raise ValueError("Response does not contain a pairs array")
+            parsed = json.loads(raw)
+            pairs = parsed.get("pairs", parsed) if isinstance(parsed, dict) else parsed
+            if not isinstance(pairs, list):
+                raise ValueError("Response does not contain a pairs array")
 
-                valid = []
-                for p in pairs:
-                    if isinstance(p, dict) and "question" in p and "answer" in p:
-                        valid.append({
-                            "question": str(p["question"]).strip(),
-                            "answer": str(p["answer"]).strip(),
-                            "source_page": source_url,
-                        })
-                return valid
+            valid = []
+            for p in pairs:
+                if isinstance(p, dict) and "question" in p and "answer" in p:
+                    valid.append({
+                        "question": str(p["question"]).strip(),
+                        "answer": str(p["answer"]).strip(),
+                        "source_page": source_url,
+                    })
+            return valid
 
-            except (json.JSONDecodeError, ValueError) as e:
-                if attempt < max_retries:
-                    print(f"  [RETRY {attempt + 1}] JSON parse error: {e}")
-                else:
-                    print(f"  [SKIP] Failed after {max_retries + 1} attempts: {e}")
-                    return []
-            except Exception as e:
-                if "rate_limit" in str(e).lower() or "429" in str(e):
-                    break  # exit inner loop → sleep and retry outer
-                print(f"  [ERROR] Groq request failed: {e}")
+        except (json.JSONDecodeError, ValueError) as e:
+            if attempt < max_retries:
+                print(f"  [RETRY {attempt + 1}] JSON parse error: {e}")
+            else:
+                print(f"  [SKIP] Failed after {max_retries + 1} attempts: {e}")
                 return []
-        else:
-            break  # inner loop finished without rate limit → done
-
-        # Rate limit hit: sleep and retry outer loop
-        rate_limit_attempts += 1
-        if rate_limit_attempts <= max_rate_limit_retries:
-            wait = 60 + (rate_limit_attempts - 1) * 30  # 60s, 90s, 120s, 150s
-            print(f"  [RATE LIMIT] Waiting {wait}s... ({rate_limit_attempts}/{max_rate_limit_retries})")
-            time.sleep(wait)
-        else:
-            print(f"  [SKIP] Rate limit retries exhausted for this chunk.")
+        except requests.RequestException as e:
+            print(f"  [ERROR] Ollama request failed: {e}")
+            print("  Make sure Ollama is running: ollama serve")
+            return []
 
     return []
 
@@ -220,17 +208,15 @@ def run_qa_generator(raw_dir: str = None, out_path: str = None) -> None:
     if raw_dir is None:
         raw_dir = RAW_DATA_DIR
     if out_path is None:
-        out_path = QA_DATASET_PATH
-
-    if not GROQ_API_KEY:
-        raise EnvironmentError("GROQ_API_KEY not set. Add it to your .env file.")
+        # Save to a separate file so the original dataset is not overwritten
+        out_path = QA_DATASET_PATH.replace(".csv", "_ollama.csv")
 
     pages = load_raw_pages(raw_dir)
 
     if not pages:
         raise FileNotFoundError(f"No .txt files found in {raw_dir}. Run scraper.py first.")
 
-    # Resume: find which pages are already done
+    # Resume: skip pages already processed
     already_done: set[str] = set()
     os.makedirs(os.path.dirname(out_path) if os.path.dirname(out_path) else ".", exist_ok=True)
     if os.path.exists(out_path):
@@ -243,9 +229,8 @@ def run_qa_generator(raw_dir: str = None, out_path: str = None) -> None:
 
     remaining = [p for p in pages if p["url"] not in already_done]
     print(f"Pages to process: {len(remaining)} / {len(pages)}")
+    print(f"Using Ollama model: {OLLAMA_QA_MODEL}  ({OLLAMA_BASE_URL})")
 
-    # Single client shared across all chunks (avoids creating ~1500 instances)
-    client = Groq(api_key=GROQ_API_KEY)
     buffer: list[dict] = []
     total_pairs = 0
 
@@ -261,12 +246,10 @@ def run_qa_generator(raw_dir: str = None, out_path: str = None) -> None:
         chunks = chunk_for_qa(page["content"], max_chars=1500)
 
         for chunk in tqdm(chunks, desc=f"  Chunks [{page['title'][:30]}]", leave=False):
-            # Scale n_pairs by chunk size: 1 pair per ~300 chars, min 2 max 5
             n_pairs = max(2, min(5, len(chunk) // 300))
             pairs = generate_qa_for_chunk(
                 chunk=chunk,
                 source_url=page["url"],
-                client=client,
                 n_pairs=n_pairs,
             )
             buffer.extend(pairs)
@@ -274,20 +257,11 @@ def run_qa_generator(raw_dir: str = None, out_path: str = None) -> None:
 
             if len(buffer) >= WRITE_EVERY:
                 flush(buffer)
-                tqdm.write(f"  Saved {total_pairs} pairs so far → {out_path}")
+                tqdm.write(f"  Saved {total_pairs} pairs so far -> {out_path}")
 
-            time.sleep(12)  # ~5 calls/min → safely under 14400 TPM free tier
-
-    # Flush remaining buffer
     flush(buffer)
-
-    # Final deduplication pass
-    if os.path.exists(out_path):
-        final_df = pd.read_csv(out_path)
-        before = len(final_df)
-        final_df = final_df.drop_duplicates(subset=["question"])
-        final_df.to_csv(out_path, index=False)
-        print(f"\nDone. {len(final_df)} unique pairs total (removed {before - len(final_df)} duplicates).")
+    print(f"\nDone! Total Q&A pairs generated: {total_pairs}")
+    print(f"Saved to: {out_path}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "type": "command",
+        "windows": "if exist .venv\\Scripts\\Activate.ps1 (powershell -NoProfile -Command \".venv\\Scripts\\Activate.ps1; Write-Output 'venv activated'\")",
+        "command": "[ -f .venv/Scripts/activate ] && source .venv/Scripts/activate && echo 'venv activated'",
+        "cwd": "${workspaceFolder}",
+        "timeout": 10
+      }
+    ]
+  }
+}

@@ -119,7 +119,7 @@ def chunk_documents(pages: list[dict]) -> list[Document]:
     """
     Split page content into overlapping chunks and wrap them as LangChain Documents.
 
-    Uses ``RecursiveCharacterTextSplitter`` with the CHUNK_SIZE and CHUNK_OVERLAP
+    Uses ``TokenTextSplitter`` with the CHUNK_SIZE and CHUNK_OVERLAP
     values from config.  Each chunk inherits the source URL and page title from
     its parent page as metadata, which is later cited in chatbot responses.
 

@@ -9,7 +9,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # --- Paths ---
 RAW_DATA_DIR = "data/raw"
 PROCESSED_DATA_DIR = "data/processed"
-QA_DATASET_PATH = "data/processed/qa_dataset.csv"
+QA_DATASET_PATH = "data/processed/qa_dataset_ollama.csv"
 CHROMA_PERSIST_DIR = "chroma_db"
 
 # --- Chroma Collections ---
@@ -20,8 +20,8 @@ QA_COLLECTION_NAME = "pandas_qa"
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 # --- Chunking ---
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 100
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 200
 
 # --- Retrieval ---
 HYBRID_THRESHOLD = 0.75
@@ -29,6 +29,10 @@ TOP_K_DOCS = 5
 
 # --- Groq (used by qa_generator) ---
 GROQ_QA_MODEL = "llama-3.1-8b-instant"
+
+# --- Ollama (used by qa_generator_ollama) ---
+OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_QA_MODEL = "llama3.2:3b"
 
 # --- LLM (Groq, used by chatbot) ---
 LLM_TEMPERATURE = 0.3

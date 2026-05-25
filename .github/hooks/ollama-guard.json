@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "type": "command",
+        "windows": "powershell -NoProfile -ExecutionPolicy Bypass -File .github/hooks/scripts/ollama-guard.ps1",
+        "command": "bash .github/hooks/scripts/ollama-guard.sh",
+        "cwd": "${workspaceFolder}",
+        "timeout": 5
+      }
+    ]
+  }
+}
