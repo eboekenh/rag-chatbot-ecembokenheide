@@ -98,30 +98,22 @@ class HybridRetriever:
     # Stage 2 – Doc semantic search (RAG fallback)
     # ------------------------------------------------------------------
 
-    def search_doc_store(self, query: str, top_k: int | None = None) -> list[Document]:
+    def search_doc_store(self, query: str, top_k: int | None = None) -> tuple[list[Document], float]:
         """
         Encode *query* and retrieve the top-K most relevant document chunks
-        from the scraped documentation store.
-
-        These chunks are passed verbatim to the LLM as grounding context,
-        so a higher top_k gives the LLM more material but also increases
-        token cost and latency.  TOP_K_DOCS (config) is the default.
-
-        Parameters
-        ----------
-        query : str
-            The raw user question.
-        top_k : int, optional
-            Override the default TOP_K_DOCS setting.
+        from the scraped documentation store, together with the best relevance score.
 
         Returns
         -------
-        list[Document]
-            Ranked document chunks (most similar first).
+        tuple[list[Document], float]
+            (ranked chunks most-similar-first, best relevance score in [0, 1])
         """
         if top_k is None:
             top_k = TOP_K_DOCS
-        return self.doc_store.similarity_search(query, k=top_k)
+        results = self.doc_store.similarity_search_with_relevance_scores(query, k=top_k)
+        docs = [doc for doc, _ in results]
+        best_doc_score = max((max(0.0, score) for _, score in results), default=0.0)
+        return docs, best_doc_score
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -153,7 +145,7 @@ class HybridRetriever:
         """
         # --- Stage 1: Q/A lookup ---
         qa_results = self.search_qa_store(query, top_k=1)
-        best_score = qa_results[0][1] if qa_results else 0.0
+        best_score = max(0.0, qa_results[0][1]) if qa_results else 0.0
         best_doc   = qa_results[0][0] if qa_results else None
 
         if best_score >= HYBRID_THRESHOLD:
@@ -168,19 +160,21 @@ class HybridRetriever:
                 "source":           best_doc.metadata.get("source", ""),
                 "matched_question": best_doc.page_content,
                 "confidence":       best_score,
+                "doc_confidence":   None,
                 "context_docs":     [],
             }
 
         # --- Stage 2: RAG fallback ---
         # No Q/A match met the threshold (or QA store is empty) — retrieve raw
         # document chunks and let the LLM synthesise a grounded answer.
-        context_docs = self.search_doc_store(query)
+        context_docs, doc_confidence = self.search_doc_store(query)
         return {
             "mode":             "doc_search",
             "answer":           None,          # LLM generates this in chatbot.py
             "source":           None,
             "matched_question": None,
-            "confidence":       best_score,    # score of the rejected QA match (not doc relevance)
+            "confidence":       best_score,    # score of the rejected QA match
+            "doc_confidence":   doc_confidence,  # actual doc relevance score
             "context_docs":     context_docs,
         }
 

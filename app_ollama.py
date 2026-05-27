@@ -35,7 +35,7 @@ from config import (
     HYBRID_THRESHOLD,
 )
 
-DOC_SEARCH_MIN_CONFIDENCE = 0.45
+DOC_SEARCH_MIN_CONFIDENCE = 0.10
 from src.retriever import HybridRetriever
 from langchain_core.documents import Document
 
@@ -53,14 +53,51 @@ def _ollama_running() -> bool:
 
 
 # ── System prompt ─────────────────────────────────────────────────────────────
-_SYSTEM_PROMPT = """You are a helpful pandas expert assistant. Use the provided context to answer questions.
+_SYSTEM_PROMPT = """You are a helpful pandas expert assistant.
 
-Rules:
-1. Always give a clear, detailed explanation — not just a one-liner.
-2. Only include code examples if the context explicitly contains them. Never invent code output — only show output values that appear verbatim in the context.
-3. Use simple language so beginners can understand.
-4. If the context does not contain enough information, say: "I don't have enough information about that in the pandas documentation."
-5. End your answer with: Source: <url>"""
+## Your job
+Answer the user's CURRENT question using the Documentation Context provided below.
+The Chat History is only for resolving pronouns like "it", "this", "that" — do NOT let previous topics override the current question.
+
+## Rules
+1. Always answer the CURRENT question. Ignore unrelated history.
+2. Give a clear, detailed explanation — not just a one-liner.
+3. Only include code examples if the Documentation Context explicitly contains them. Never invent output values.
+4. Use simple language so beginners can understand.
+5. If the Documentation Context does not contain enough information, say: "I don't have enough information about that in the pandas documentation."
+6. End your answer with: Source: <url>"""
+
+
+# ── Follow-up detection ───────────────────────────────────────────────────────
+_PANDAS_KEYWORDS = {
+    "dataframe", "series", "pandas", "column", "row", "index", "merge", "join",
+    "group", "groupby", "sort", "filter", "read", "csv", "excel", "missing",
+    "nan", "null", "dtype", "apply", "map", "concat", "pivot", "melt", "stack",
+    "resample", "rolling", "shift", "diff", "cumsum", "describe", "info",
+    "loc", "iloc", "assign", "drop", "rename", "fillna", "dropna", "replace",
+    "astype", "datetime", "value_counts", "agg", "plot", "reset", "set_index",
+    "mean", "median", "sum", "count", "max", "min", "std", "var", "unique",
+    "duplicates", "sample", "head", "tail", "select", "subset", "condition",
+    "boolean", "mask", "where", "query", "eval", "crosstab", "cut", "qcut",
+}
+
+
+def _is_followup(query: str) -> bool:
+    """True if query is a short follow-up without pandas-specific terms."""
+    words = query.lower().split()
+    if len(words) >= 8:
+        return False
+    return not any(kw in query.lower() for kw in _PANDAS_KEYWORDS)
+
+
+def _get_retrieval_query(query: str, memory: list) -> str:
+    """For follow-up questions, prepend the last user topic to improve retrieval."""
+    if not _is_followup(query):
+        return query
+    for msg in reversed(memory):
+        if msg["role"] == "user":
+            return f"{msg['content']} {query}"
+    return query
 
 
 # ── Cached resource loaders ───────────────────────────────────────────────────
@@ -87,7 +124,10 @@ def _build_messages(query: str, context_docs: list, memory: list) -> list:
         context_blocks.append(f"[{i}] (Source: {source})\n{doc.page_content}")
     context_text = "\n\n".join(context_blocks)
 
-    user_content = f"Context:\n{context_text}\n\nQuestion: {query}"
+    user_content = (
+        f"## Documentation Context\n{context_text}\n\n"
+        f"## Current Question\n{query}"
+    )
 
     messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
     messages.extend(memory[-(MAX_HISTORY_TURNS * 2):])
@@ -120,8 +160,10 @@ def _build_qa_messages(query: str, qa_matches: list, memory: list) -> list:
 
 def _prepare_chat(query: str, retriever: HybridRetriever, memory: list) -> tuple:
     """Return (messages_or_None, meta_dict) without calling the LLM."""
-    retrieval = retriever.retrieve(query)
+    retrieval_query = _get_retrieval_query(query, memory)
+    retrieval = retriever.retrieve(retrieval_query)
     confidence = retrieval["confidence"]
+    doc_confidence = retrieval.get("doc_confidence")
 
     if retrieval["mode"] == "qa_match":
         all_qa = retriever.search_qa_store(query, top_k=3)
@@ -129,17 +171,21 @@ def _prepare_chat(query: str, retriever: HybridRetriever, memory: list) -> tuple
         if not qa_matches:
             qa_matches = [all_qa[0]] if all_qa else []
         messages = _build_qa_messages(query, qa_matches, memory)
-        sources = list({
-            doc.metadata.get("source", "")
-            for doc, _ in qa_matches
-            if doc.metadata.get("source")
-        })
+        seen = set()
+        sources = []
+        for doc, _ in qa_matches:
+            src = doc.metadata.get("source", "")
+            if src and src not in seen:
+                seen.add(src)
+                sources.append(src)
         mode = "qa_match"
         matched_question = retrieval["matched_question"] or ""
     else:
         context_docs = retrieval["context_docs"]
         matched_question = None
-        if not context_docs or confidence < DOC_SEARCH_MIN_CONFIDENCE:
+        has_prior_context = _is_followup(query) and any(m["role"] == "user" for m in memory)
+        low_confidence = not context_docs or (doc_confidence or 0.0) < DOC_SEARCH_MIN_CONFIDENCE
+        if low_confidence and not has_prior_context:
             messages = None
             sources = []
         else:
@@ -151,9 +197,10 @@ def _prepare_chat(query: str, retriever: HybridRetriever, memory: list) -> tuple
             })
         mode = "doc_search"
 
+    display_confidence = round(confidence, 3) if mode == "qa_match" else round(doc_confidence or 0.0, 3)
     return messages, {
         "mode": mode,
-        "confidence": round(confidence, 3),
+        "confidence": display_confidence,
         "sources": sources,
         "matched_question": matched_question if mode == "qa_match" else None,
     }
@@ -161,8 +208,10 @@ def _prepare_chat(query: str, retriever: HybridRetriever, memory: list) -> tuple
 
 def chat(query: str, retriever: HybridRetriever, llm, memory: list) -> dict:
     """Run hybrid retrieval + Ollama generation. Returns result dict."""
-    retrieval = retriever.retrieve(query)
+    retrieval_query = _get_retrieval_query(query, memory)
+    retrieval = retriever.retrieve(retrieval_query)
     confidence = retrieval["confidence"]
+    doc_confidence = retrieval.get("doc_confidence")
 
     if retrieval["mode"] == "qa_match":
         # Retrieve top-3 QA matches and keep those above the threshold
@@ -171,12 +220,13 @@ def chat(query: str, retriever: HybridRetriever, llm, memory: list) -> dict:
         if not qa_matches:  # safety fallback
             qa_matches = [all_qa[0]] if all_qa else []
 
-        # Collect sources from all matched pairs
-        sources = list({
-            doc.metadata.get("source", "")
-            for doc, _ in qa_matches
-            if doc.metadata.get("source")
-        })
+        seen = set()
+        sources = []
+        for doc, _ in qa_matches:
+            src = doc.metadata.get("source", "")
+            if src and src not in seen:
+                seen.add(src)
+                sources.append(src)
         mode = "qa_match"
         matched_question = retrieval["matched_question"] or ""
 
@@ -189,7 +239,9 @@ def chat(query: str, retriever: HybridRetriever, llm, memory: list) -> dict:
     else:
         context_docs = retrieval["context_docs"]
         matched_question = None
-        if not context_docs or confidence < DOC_SEARCH_MIN_CONFIDENCE:
+        has_prior_context = _is_followup(query) and any(m["role"] == "user" for m in memory)
+        low_confidence = not context_docs or (doc_confidence or 0.0) < DOC_SEARCH_MIN_CONFIDENCE
+        if low_confidence and not has_prior_context:
             answer = "I don't have enough information about that in the pandas documentation."
             sources = []
         else:

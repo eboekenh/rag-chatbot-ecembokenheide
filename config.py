@@ -24,7 +24,7 @@ CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 200
 
 # --- Retrieval ---
-HYBRID_THRESHOLD = 0.75
+HYBRID_THRESHOLD = 0.52
 TOP_K_DOCS = 5
 
 # --- Groq (used by qa_generator) ---
@@ -32,7 +32,7 @@ GROQ_QA_MODEL = "llama-3.1-8b-instant"
 
 # --- Ollama (used by qa_generator_ollama) ---
 OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_QA_MODEL = "llama3.2:3b"
+OLLAMA_QA_MODEL = "llama3.1:8b"
 
 # --- LLM (Groq, used by chatbot) ---
 LLM_TEMPERATURE = 0.3
