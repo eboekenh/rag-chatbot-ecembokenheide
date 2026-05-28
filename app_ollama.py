@@ -166,10 +166,7 @@ def _prepare_chat(query: str, retriever: HybridRetriever, memory: list) -> tuple
     doc_confidence = retrieval.get("doc_confidence")
 
     if retrieval["mode"] == "qa_match":
-        all_qa = retriever.search_qa_store(query, top_k=3)
-        qa_matches = [(doc, score) for doc, score in all_qa if score >= HYBRID_THRESHOLD]
-        if not qa_matches:
-            qa_matches = [all_qa[0]] if all_qa else []
+        qa_matches = retrieval["qa_matches"]
         messages = _build_qa_messages(query, qa_matches, memory)
         seen = set()
         sources = []
@@ -214,11 +211,7 @@ def chat(query: str, retriever: HybridRetriever, llm, memory: list) -> dict:
     doc_confidence = retrieval.get("doc_confidence")
 
     if retrieval["mode"] == "qa_match":
-        # Retrieve top-3 QA matches and keep those above the threshold
-        all_qa = retriever.search_qa_store(query, top_k=3)
-        qa_matches = [(doc, score) for doc, score in all_qa if score >= HYBRID_THRESHOLD]
-        if not qa_matches:  # safety fallback
-            qa_matches = [all_qa[0]] if all_qa else []
+        qa_matches = retrieval["qa_matches"]
 
         seen = set()
         sources = []
@@ -394,7 +387,7 @@ for msg in st.session_state.messages:
                 cols[0].success(f"✅ Q&A Match ({meta['confidence']:.0%})")
             else:
                 cols[0].info(f"🔍 Doc Search ({meta['confidence']:.0%})")
-            if meta.get("sources"):
+            if meta.get("mode") == "doc_search" and meta.get("sources"):
                 with cols[2].expander("📄 Sources"):
                     for src in meta["sources"]:
                         st.caption(f"• {src}")
@@ -413,8 +406,12 @@ if user_input:
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Prepare retrieval (fast) — no LLM call yet
-    messages, meta = _prepare_chat(user_input, retriever, st.session_state.memory)
+    # Pre-save user message so follow-up context is available even if streaming
+    # is interrupted by the next user input before st.rerun() completes.
+    st.session_state.memory.append({"role": "user", "content": user_input})
+
+    # Prepare retrieval using prior turns only (exclude the just-added current message)
+    messages, meta = _prepare_chat(user_input, retriever, st.session_state.memory[:-1])
 
     # Stream the assistant response token-by-token
     with st.chat_message("assistant"):
@@ -436,7 +433,7 @@ if user_input:
             cols[0].success(f"✅ Q&A Match ({meta['confidence']:.0%})")
         else:
             cols[0].info(f"🔍 Doc Search ({meta['confidence']:.0%})")
-        if meta.get("sources"):
+        if meta.get("mode") == "doc_search" and meta.get("sources"):
             with cols[2].expander("📄 Sources"):
                 for src in meta["sources"]:
                     st.caption(f"• {src}")
@@ -444,8 +441,7 @@ if user_input:
             with st.expander("🔗 Matched Q&A"):
                 st.caption(f"**Matched question:** {meta['matched_question']}")
 
-    # Update conversation memory
-    st.session_state.memory.append({"role": "user", "content": user_input})
+    # Save assistant response and trim memory
     st.session_state.memory.append({"role": "assistant", "content": answer})
     if len(st.session_state.memory) > MAX_HISTORY_TURNS * 2:
         del st.session_state.memory[:2]

@@ -36,7 +36,7 @@ import sys
 from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from config import HYBRID_THRESHOLD, TOP_K_DOCS
+from config import HYBRID_THRESHOLD, TOP_K_DOCS, OLLAMA_BASE_URL, OLLAMA_QA_MODEL
 
 from langchain_core.documents import Document
 from src.vector_store import load_doc_store, load_qa_store
@@ -66,6 +66,46 @@ class HybridRetriever:
         self.doc_store = load_doc_store()
         self.qa_store = load_qa_store()
         logger.info("Retriever ready.")
+
+    # ------------------------------------------------------------------
+    # Multi-query expansion
+    # ------------------------------------------------------------------
+
+    def _expand_query(self, query: str) -> list[str]:
+        """
+        Ask Ollama to rephrase the query in 2 more formal/documentation-style
+        variants. Used to improve recall when the user's phrasing differs from
+        how questions are stored in the Q/A dataset.
+        Falls back to an empty list silently if Ollama is unavailable.
+        """
+        try:
+            import requests
+            prompt = (
+                "Rephrase the following question in exactly 2 ways as it might appear in a "
+                "pandas documentation FAQ. Return ONLY the 2 questions, one per line. "
+                "No numbers, no dashes, no headings, no extra text — just 2 lines ending with '?'.\n\n"
+                f"Question: {query}"
+            )
+            resp = requests.post(
+                f"{OLLAMA_BASE_URL}/api/generate",
+                json={
+                    "model": OLLAMA_QA_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0, "num_predict": 80},
+                },
+                timeout=10,
+            )
+            if resp.ok:
+                lines = [
+                    l.strip()
+                    for l in resp.json().get("response", "").strip().split("\n")
+                    if l.strip() and "?" in l
+                ]
+                return [l for l in lines[:2] if l.lower() != query.lower()]
+        except Exception as exc:
+            logger.warning("Query expansion failed: %s", exc)
+        return []
 
     # ------------------------------------------------------------------
     # Stage 1 – Q/A semantic search
@@ -143,17 +183,34 @@ class HybridRetriever:
         dict
             See module-level docstring for the full return contract.
         """
-        # --- Stage 1: Q/A lookup ---
-        qa_results = self.search_qa_store(query, top_k=1)
-        best_score = max(0.0, qa_results[0][1]) if qa_results else 0.0
-        best_doc   = qa_results[0][0] if qa_results else None
+        # --- Stage 1: Q/A lookup with multi-query expansion ---
+        # Search original query + up to 2 Ollama-generated paraphrases so that
+        # colloquial phrasings ("how do I read a csv") still find formally-phrased
+        # Q/A pairs ("How can I read a csv file into a pandas DataFrame?").
+        expanded = self._expand_query(query)
+        all_queries = [query] + expanded
+        logger.debug("Multi-query variants: %s", all_queries)
+
+        best_score = 0.0
+        best_doc   = None
+        best_top3: list[tuple] = []
+
+        for q in all_queries:
+            results = self.search_qa_store(q, top_k=3)
+            if not results:
+                continue
+            top_score = max(0.0, results[0][1])
+            if top_score > best_score:
+                best_score = top_score
+                best_doc   = results[0][0]
+                best_top3  = results
 
         if best_score >= HYBRID_THRESHOLD:
             if best_doc is None:
                 raise RuntimeError("qa_results was non-empty but best_doc is None — unexpected state.")
-            # Score meets threshold — return the pre-generated answer.
-            # The matched_question field is exposed in the UI so users can see
-            # which stored question was considered equivalent to their query.
+            qa_matches = [
+                (doc, score) for doc, score in best_top3 if score >= HYBRID_THRESHOLD
+            ] or [best_top3[0]]
             return {
                 "mode":             "qa_match",
                 "answer":           best_doc.metadata.get("answer", ""),
@@ -162,19 +219,19 @@ class HybridRetriever:
                 "confidence":       best_score,
                 "doc_confidence":   None,
                 "context_docs":     [],
+                "qa_matches":       qa_matches,
             }
 
         # --- Stage 2: RAG fallback ---
-        # No Q/A match met the threshold (or QA store is empty) — retrieve raw
-        # document chunks and let the LLM synthesise a grounded answer.
         context_docs, doc_confidence = self.search_doc_store(query)
         return {
             "mode":             "doc_search",
-            "answer":           None,          # LLM generates this in chatbot.py
+            "answer":           None,
             "source":           None,
             "matched_question": None,
-            "confidence":       best_score,    # score of the rejected QA match
-            "doc_confidence":   doc_confidence,  # actual doc relevance score
+            "confidence":       best_score,
+            "doc_confidence":   doc_confidence,
             "context_docs":     context_docs,
+            "qa_matches":       [],
         }
 

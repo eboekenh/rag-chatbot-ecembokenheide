@@ -17,7 +17,7 @@ DOC_COLLECTION_NAME = "pandas_docs"
 QA_COLLECTION_NAME = "pandas_qa"
 
 # --- Embedding ---
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "multi-qa-MiniLM-L6-cos-v1"
 
 # --- Chunking ---
 CHUNK_SIZE = 1000

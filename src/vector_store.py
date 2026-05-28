@@ -24,6 +24,7 @@ Runtime (called by retriever.py on startup):
 
 import logging
 import os
+import shutil
 import sys
 import functools
 
@@ -180,6 +181,9 @@ def build_doc_store(raw_dir: str | None = None, persist_dir: str | None = None) 
     if persist_dir is None:
         persist_dir = os.path.join(CHROMA_PERSIST_DIR, "docs")
 
+    if os.path.exists(persist_dir):
+        shutil.rmtree(persist_dir)
+
     pages = load_raw_pages(raw_dir)
     if not pages:
         raise FileNotFoundError(f"No .txt files in {raw_dir}. Run scraper.py first.")
@@ -241,6 +245,9 @@ def build_qa_store(qa_csv: str | None = None, persist_dir: str | None = None) ->
         qa_csv = QA_DATASET_PATH
     if persist_dir is None:
         persist_dir = os.path.join(CHROMA_PERSIST_DIR, "qa")
+
+    if os.path.exists(persist_dir):
+        shutil.rmtree(persist_dir)
 
     if not os.path.exists(qa_csv):
         raise FileNotFoundError(f"{qa_csv} not found. Run qa_generator.py first.")
