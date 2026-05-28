@@ -11,6 +11,7 @@ Requirements:
     ollama pull llama3.2:3b
 """
 import os
+import re
 import socket
 import sys
 
@@ -88,6 +89,14 @@ def _is_followup(query: str) -> bool:
     if len(words) >= 8:
         return False
     return not any(kw in query.lower() for kw in _PANDAS_KEYWORDS)
+
+
+def _extract_source_url(answer: str) -> list[str]:
+    """Extract the single Source URL the LLM cited in its answer."""
+    match = re.search(r'[Ss]ource:\s*(https?://\S+)', answer)
+    if match:
+        return [match.group(1).rstrip('.,)>')]
+    return []
 
 
 def _get_retrieval_query(query: str, memory: list) -> str:
@@ -242,7 +251,8 @@ def chat(query: str, retriever: HybridRetriever, llm, memory: list) -> dict:
             try:
                 response = llm.invoke(messages)
                 answer = response.content
-                sources = list({
+                extracted = _extract_source_url(answer)
+                sources = extracted if extracted else list({
                     doc.metadata.get("source", "")
                     for doc in context_docs
                     if doc.metadata.get("source")
@@ -423,6 +433,10 @@ if user_input:
                 answer = st.write_stream(
                     chunk.content for chunk in llm.stream(messages)
                 )
+                # Use the URL the LLM actually cited instead of all retrieved sources
+                extracted = _extract_source_url(answer)
+                if extracted:
+                    meta["sources"] = extracted
             except Exception as exc:
                 answer = f"Ollama error: {exc}"
                 st.error(answer)
