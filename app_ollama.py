@@ -1,15 +1,3 @@
-"""Ollama-powered RAG chatbot Streamlit app.
-
-Identical retrieval pipeline as app.py (hybrid QA-store + doc-store),
-but uses a local Ollama LLM instead of the Groq API.
-
-Run with:
-    streamlit run app_ollama.py
-
-Requirements:
-    ollama serve          # must be running on localhost:11434
-    ollama pull llama3.1:8b
-"""
 import os
 import re
 import socket
@@ -36,7 +24,7 @@ from config import (
     HYBRID_THRESHOLD,
 )
 
-DOC_SEARCH_MIN_CONFIDENCE = 0.10
+DOC_SEARCH_MIN_CONFIDENCE = 0.20
 from src.retriever import HybridRetriever
 from langchain_core.documents import Document
 
@@ -99,6 +87,24 @@ def _extract_source_url(answer: str) -> list[str]:
     return []
 
 
+_PANDAS_KEYWORDS = {
+    "pandas", "dataframe", "df", "series", "column", "columns", "row", "rows",
+    "index", "merge", "join", "concat", "groupby", "group", "sort", "filter",
+    "read_csv", "read_excel", "to_csv", "iloc", "loc", "apply", "map", "lambda",
+    "pivot", "melt", "stack", "unstack", "resample", "rolling", "shift", "diff",
+    "fillna", "dropna", "isna", "isnull", "notnull", "duplicated", "drop_duplicates",
+    "rename", "reset_index", "set_index", "astype", "dtypes", "dtype", "shape",
+    "values", "head", "tail", "describe", "info", "value_counts", "unique",
+    "nunique", "aggregate", "agg", "transform", "explode", "crosstab",
+    "data", "dataset", "table", "cell", "missing", "nan", "null",
+}
+
+
+def _is_pandas_related(query: str) -> bool:
+    words = set(query.lower().replace("?", "").replace(",", "").split())
+    return bool(words & _PANDAS_KEYWORDS)
+
+
 def _get_retrieval_query(query: str, memory: list) -> str:
     """For follow-up questions, prepend the last user topic to improve retrieval."""
     if not _is_followup(query):
@@ -145,7 +151,7 @@ def _build_messages(query: str, context_docs: list, memory: list) -> list:
 
 
 def _build_qa_messages(query: str, qa_matches: list, memory: list) -> list:
-    """QA-Match: mehrere passende Q&A-Paare als Kontext, Ollama erklärt ausführlich.
+    """QA-Match: Using several relevant Q&A pairs as context, Ollama explains in detail.
 
     qa_matches: list of (Document, score) tuples, alle >= HYBRID_THRESHOLD
     """
@@ -169,6 +175,11 @@ def _build_qa_messages(query: str, qa_matches: list, memory: list) -> list:
 
 def _prepare_chat(query: str, retriever: HybridRetriever, memory: list) -> tuple:
     """Return (messages_or_None, meta_dict) without calling the LLM."""
+    is_followup = _is_followup(query)
+    has_prior_context = is_followup and any(m["role"] == "user" for m in memory)
+    if not _is_pandas_related(query) and not has_prior_context:
+        return None, {"mode": "doc_search", "confidence": 0.0, "sources": [], "matched_question": None}
+
     retrieval_query = _get_retrieval_query(query, memory)
     retrieval = retriever.retrieve(retrieval_query)
     confidence = retrieval["confidence"]
@@ -338,7 +349,7 @@ with st.sidebar:
     st.divider()
 
     # Dataset sample viewer
-    qa_path = "data/processed/qa_dataset_ollama - Kopie (2).csv"
+    qa_path = "data/processed/qa_dataset_ollama.csv"
     if not os.path.exists(qa_path):
         qa_path = "data/processed/qa_dataset.csv"
     if os.path.exists(qa_path):
@@ -358,10 +369,10 @@ with st.sidebar:
         st.markdown("""
 **Hybrid Retrieval:**
 1. Searches Q&A dataset first (cosine similarity)
-2. Falls back to full doc search if score < 0.75
+2. Falls back to full doc search if no related QA is found
 
 **Models:**
-- LLM: Ollama llama3.1:8b (local)
+- LLM: Ollama llama3.1:8b
 - Embeddings: all-MiniLM-L6-v2
 
 **Vector DB:** Chroma (2 collections)
@@ -376,7 +387,7 @@ with st.sidebar:
 
 # ── Main chat area ────────────────────────────────────────────────────────────
 st.title("🦙 Ask me anything about pandas")
-st.caption("Powered by RAG · Hybrid Q&A + Document Retrieval · Ollama llama3.1:8b (local)")
+st.caption("Powered by RAG · Hybrid Q&A + Document Retrieval · Ollama llama3.1:8b")
 
 if not st.session_state.messages:
     st.info(

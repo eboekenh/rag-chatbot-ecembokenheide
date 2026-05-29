@@ -80,20 +80,27 @@ def screenshot(label, i):
         print(f"Screenshot fehlgeschlagen (Browser weg?): {e}")
 
 
-def wait_for_streaming_complete(timeout=180):
-    """Wait until the Streamlit Stop button disappears (streaming is done)."""
-    try:
-        WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'button[data-testid="stStopButton"]'))
-        )
-    except Exception:
-        pass  # Stop button may not have appeared yet; that's fine
-    try:
-        WebDriverWait(driver, timeout).until_not(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'button[data-testid="stStopButton"]'))
-        )
-    except Exception:
-        pass  # Timeout is acceptable — screenshot will capture current state
+def wait_for_response_badge(expected_count: int, timeout: int = LLM_TIMEOUT) -> bool:
+    """Wait until at least `expected_count` confidence badges are visible on the page.
+
+    Confidence badges ('Q&A Match' / 'Doc Search') are rendered only AFTER streaming
+    completes, so their count reliably signals that the LLM response is done and
+    st.session_state has been updated with the answer.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            body_text = driver.find_element(By.TAG_NAME, "body").text
+            count = body_text.count("Q&A Match") + body_text.count("Doc Search")
+            if count >= expected_count:
+                time.sleep(2)  # brief buffer for st.rerun() to complete
+                return True
+        except (InvalidSessionIdException, WebDriverException):
+            return False
+        except Exception:
+            pass
+        time.sleep(1)
+    return False
 
 
 def send_message(text, i, label):
@@ -121,38 +128,28 @@ def send_message(text, i, label):
 
 
 for i in range(10):
+    # Expected badge count after each response:
+    # Q1 main=1, Q1 followup=2, Q2 main=3, Q2 followup=4, ...
+    expected_main_badges = i * 2 + 1
+    expected_followup_badges = i * 2 + 2
+
     try:
         # Hauptfrage
         if not send_message(QUESTIONS[i], i, "Hauptfrage"):
             print(f"[Frage {i+1}] übersprungen (Browser-Fehler)")
             continue
 
-        expected_main = (i + 1) * 2
-        try:
-            WebDriverWait(driver, LLM_TIMEOUT).until(
-                lambda d, n=expected_main: len(
-                    d.find_elements(By.CSS_SELECTOR, '[data-testid="stChatMessageContent"]')
-                ) >= n
-            )
-        except Exception as e:
-            print(f"Timeout Hauptfrage {i+1}: {e}")
+        if not wait_for_response_badge(expected_main_badges):
+            print(f"Timeout Hauptfrage {i+1}")
         screenshot("main", i)
-        wait_for_streaming_complete()  # ensure memory is updated before follow-up
 
-        # Folgefrage
+        # Folgefrage — badge count guarantees Q(i+1) streaming is done before we send this
         if not send_message(FOLLOW_UPS[i], i, "Folgefrage"):
             print(f"[Folgefrage {i+1}] übersprungen (Browser-Fehler)")
             continue
 
-        expected_followup = (i + 1) * 2 + 1
-        try:
-            WebDriverWait(driver, LLM_TIMEOUT).until(
-                lambda d, n=expected_followup: len(
-                    d.find_elements(By.CSS_SELECTOR, '[data-testid="stChatMessageContent"]')
-                ) >= n
-            )
-        except Exception as e:
-            print(f"Timeout Folgefrage {i+1}: {e}")
+        if not wait_for_response_badge(expected_followup_badges):
+            print(f"Timeout Folgefrage {i+1}")
         screenshot("followup", i)
 
     except (InvalidSessionIdException, WebDriverException) as e:
