@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import sentence_transformers; print\\('OK', sentence_transformers.__version__\\)\")",
+      "Bash(pip show *)",
+      "Bash(python -c \"import sys; print\\(sys.path\\); import sentence_transformers\")",
+      "Bash(C:/Users/birli/anaconda3/python.exe -m pip install sentence-transformers)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8503)",
+      "Bash(python test_app_ollama_selenium.py)",
+      "PowerShell(netstat -ano | Select-String \":8503\\\\s\" | ForEach-Object { $_ })"
+    ]
+  }
+}
