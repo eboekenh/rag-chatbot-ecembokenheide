@@ -8,7 +8,7 @@ Run with:
 
 Requirements:
     ollama serve          # must be running on localhost:11434
-    ollama pull llama3.2:3b
+    ollama pull llama3.1:8b
 """
 import os
 import re
@@ -292,7 +292,7 @@ if not _ollama_running():
         "Please start it first:\n"
         "```powershell\n"
         "ollama serve\n"
-        "ollama pull llama3.2:3b\n"
+        "ollama pull llama3.1:8b\n"
         "```\n"
         "Then reload this page.",
         icon="🦙",
@@ -308,7 +308,7 @@ llm = load_llm()
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.title("🦙 Pandas Ollama Chatbot")
-    st.caption("Local LLM · Ollama llama3.2:3b · RAG")
+    st.caption("Local LLM · Ollama llama3.1:8b · RAG")
     st.divider()
 
     st.markdown("**Website:**")
@@ -361,7 +361,7 @@ with st.sidebar:
 2. Falls back to full doc search if score < 0.75
 
 **Models:**
-- LLM: Ollama llama3.2:3b (local)
+- LLM: Ollama llama3.1:8b (local)
 - Embeddings: all-MiniLM-L6-v2
 
 **Vector DB:** Chroma (2 collections)
@@ -376,7 +376,7 @@ with st.sidebar:
 
 # ── Main chat area ────────────────────────────────────────────────────────────
 st.title("🦙 Ask me anything about pandas")
-st.caption("Powered by RAG · Hybrid Q&A + Document Retrieval · Ollama llama3.2:3b (local)")
+st.caption("Powered by RAG · Hybrid Q&A + Document Retrieval · Ollama llama3.1:8b (local)")
 
 if not st.session_state.messages:
     st.info(
@@ -397,10 +397,6 @@ for msg in st.session_state.messages:
                 cols[0].success(f"✅ Q&A Match ({meta['confidence']:.0%})")
             else:
                 cols[0].info(f"🔍 Doc Search ({meta['confidence']:.0%})")
-            if meta.get("mode") == "doc_search" and meta.get("sources"):
-                with cols[2].expander("📄 Sources"):
-                    for src in meta["sources"]:
-                        st.caption(f"• {src}")
             if meta.get("matched_question"):
                 with st.expander("🔗 Matched Q&A"):
                     st.caption(f"**Matched question:** {meta['matched_question']}")
@@ -447,10 +443,6 @@ if user_input:
             cols[0].success(f"✅ Q&A Match ({meta['confidence']:.0%})")
         else:
             cols[0].info(f"🔍 Doc Search ({meta['confidence']:.0%})")
-        if meta.get("mode") == "doc_search" and meta.get("sources"):
-            with cols[2].expander("📄 Sources"):
-                for src in meta["sources"]:
-                    st.caption(f"• {src}")
         if meta.get("matched_question"):
             with st.expander("🔗 Matched Q&A"):
                 st.caption(f"**Matched question:** {meta['matched_question']}")
